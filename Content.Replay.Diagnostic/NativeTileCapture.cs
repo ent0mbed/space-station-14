@@ -85,7 +85,7 @@ public sealed class NativeTileCapture : IDisposable
         _tileOutput = File.Create(Path.Combine(outputDirectory, "tiles.jsonl"));
         _tileObserver.TileChanged += OnNativeTileChanged;
         _subscribed = true;
-        WriteTiles(new { kind = "tile-header", schema = Schema, sceneSchema = "ss14-diagnostic/0.2",
+        WriteTiles(new { kind = "tile-header", schema = Schema, sceneSchema = Program.SceneSchema,
             capability = "grid-tiles", finalizedTransport = false, frameCount, timeUnit = "100ns",
             sourceClockOrigin100ns = _sourceClockOrigin, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion,
@@ -357,7 +357,7 @@ public sealed class NativeTileCapture : IDisposable
         _tileOutput!.Flush();
         Unsubscribe();
         _finished = true;
-        return new { enabled = true, schema = Schema, file = "tiles.jsonl", sceneSchema = "ss14-diagnostic/0.2",
+        return new { enabled = true, schema = Schema, file = "tiles.jsonl", sceneSchema = Program.SceneSchema,
             frames = _tileFrames, initialGrids = _initialTileGrids, finalGrids = _tileGrids.Count,
             initialNonemptyTiles = _initialTileCount, finalNonemptyTiles = _tileCount,
             initialChunks = _initialTileChunks, finalChunks = _tileChunkCount,

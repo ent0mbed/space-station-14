@@ -11,6 +11,10 @@ internal static class Program
 {
     public const string GameBuild = "94087a918a2fae4571f5a529fe14ef7f5dce29a3";
     public const string EngineVersion = "289.0.3";
+    public const string SceneSchema = "ss14-diagnostic/0.3";
+    public const string SummarySchema = "ss14-diagnostic-summary/0.3";
+    public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
+    public const int MaxShaderParameterNameCharacters = 256;
     public static readonly Stopwatch Total = Stopwatch.StartNew();
     public static string Input = "";
     public static string Output = "";
