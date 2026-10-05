@@ -1,0 +1,175 @@
+using System.Text.Json;
+using Robust.Client.GameObjects;
+
+namespace Content.Replay.Diagnostic;
+
+public sealed partial class CaptureRunner
+{
+    // These buffers contain export values, never mutable native layer/shader instances.
+    private readonly LayerValue[] _layerScratch = new LayerValue[256];
+    private readonly PostShaderValue[] _postScratch = new PostShaderValue[64];
+    private readonly List<SpriteDefinition> _spriteDefinitions = new();
+    private readonly Dictionary<int, List<SpriteDefinition>> _spriteBuckets = new();
+    private readonly Dictionary<int, int> _previousSprites = new();
+    private long _spriteDefinitionBytes;
+    private int _emittedSprites;
+    private int _spriteCandidates;
+    private int _previousSpriteReuses;
+    private int _sharedSpriteReuses;
+
+    private int CaptureSprite(int entityId, SpriteComponent component, bool initial)
+    {
+        _spriteCandidates++;
+        var nativeLayers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
+        if (nativeLayers.Count > _layerScratch.Length)
+            throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
+        for (var index = 0; index < nativeLayers.Count; index++)
+        {
+            var layer = nativeLayers[index];
+            var rsi = layer.RSI ?? component.BaseRSI;
+            if (rsi != null)
+                EnsureRsi(rsi);
+            var shader = layer.ShaderPrototype?.ToString();
+            if (shader != null)
+            {
+                _shaderPrototypes.Add(shader);
+                EnsureResource("shader-prototype", shader, ShaderMetadata);
+            }
+            if (initial && (shader != null || layer.Shader != null))
+                _shaderLayers++;
+            var texturePath = ResolveTexture(layer.Texture);
+            if (texturePath != null)
+                EnsureResource("image", texturePath, BodyMetadata);
+            _layerScratch[index] = new LayerValue(index, layer.Visible,
+                ColorValue.From(layer.Color), VectorValue.From(layer.Scale), VectorValue.From(layer.Offset),
+                layer.Rotation.Theta, rsi?.Path.ToString(), layer.State.Name, texturePath,
+                layer.AnimationFrame, layer.AnimationTimeLeft, layer.AutoAnimated, layer.Loop, layer.Cycle,
+                layer.Reversed, EnumName(layer.DirOffset), EnumName(layer.RenderingStrategy), shader,
+                layer.Shader != null, layer.Shader?.Mutable, layer.Shader != null,
+                layer.CopyToShaderParameters != null);
+        }
+        var nativePosts = _entities.System<SpriteSystem>().GetPostShaders(component);
+        if (nativePosts.Count > _postScratch.Length)
+            throw new InvalidDataException("Diagnostic post-shader budget exceeded.");
+        for (var index = 0; index < nativePosts.Count; index++)
+        {
+            var post = nativePosts[index];
+            _postScratch[index] = new PostShaderValue(post.Id, post.Shader != null,
+                post.GetScreenTexture, post.RaiseShaderEvent, true);
+        }
+        if (initial)
+        {
+            _sprites++;
+            _layers += nativeLayers.Count;
+        }
+        var head = new SpriteHead(component.Visible, component.ContainerOccluded, component.DrawDepth,
+            component.RenderOrder, ColorValue.From(component.Color), VectorValue.From(component.Scale),
+            VectorValue.From(component.Offset), component.Rotation.Theta, component.NoRotation,
+            component.SnapCardinals, component.EnableDirectionOverride, EnumName(component.DirectionOverride),
+            component.GranularLayersRendering);
+        var layers = _layerScratch.AsSpan(0, nativeLayers.Count);
+        var posts = _postScratch.AsSpan(0, nativePosts.Count);
+
+        // BoundsDirty and PostShaderOrderDirty are not complete visual revisions. Compare the actual
+        // projected values after native presentation; no speculative network-dirty shortcut.
+        if (_previousSprites.TryGetValue(entityId, out var previous)
+            && _spriteDefinitions[previous - 1].Matches(head, layers, posts))
+        {
+            _previousSpriteReuses++;
+            return previous;
+        }
+        var hash = new HashCode();
+        hash.Add(head);
+        foreach (var layer in layers) hash.Add(layer);
+        foreach (var post in posts) hash.Add(post);
+        var key = hash.ToHashCode();
+        if (_spriteBuckets.TryGetValue(key, out var bucket))
+            foreach (var existing in bucket)
+                if (existing.Matches(head, layers, posts))
+                {
+                    _sharedSpriteReuses++;
+                    _previousSprites[entityId] = existing.Id;
+                    return existing.Id;
+                }
+
+        if (_spriteDefinitions.Count >= Program.MaxSpriteDefinitions)
+            throw new InvalidDataException("Diagnostic sprite-definition count budget exceeded.");
+        // Allocate immutable arrays and serialize only on an exact structural cache miss.
+        var ownedLayers = layers.ToArray();
+        var ownedPosts = posts.ToArray();
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new {
+            head.Visible, head.ContainerOccluded, head.DrawDepth, head.RenderOrder,
+            head.Color, head.Scale, head.Offset, head.Rotation, head.NoRotation, head.SnapCardinals,
+            head.EnableDirectionOverride, head.DirectionOverride, head.GranularLayersRendering,
+            layers = ownedLayers, postShaders = ownedPosts }, Json);
+        if (_spriteDefinitionBytes + bytes.Length > Program.MaxSpriteDefinitionBytes)
+            throw new InvalidDataException("Diagnostic sprite-definition byte budget exceeded.");
+        var definition = new SpriteDefinition(_spriteDefinitions.Count + 1, head, ownedLayers, ownedPosts, bytes);
+        _spriteDefinitions.Add(definition);
+        (_spriteBuckets.TryGetValue(key, out bucket) ? bucket : _spriteBuckets[key] = new()).Add(definition);
+        _spriteDefinitionBytes += bytes.Length;
+        _previousSprites[entityId] = definition.Id;
+        return definition.Id;
+    }
+
+    private void WriteSpriteDefinitions()
+    {
+        while (_emittedSprites < _spriteDefinitions.Count)
+        {
+            var definition = _spriteDefinitions[_emittedSprites++];
+            CheckOutputBudget(definition.Bytes.Length + 128);
+            var start = System.Diagnostics.Stopwatch.GetTimestamp();
+            using (var writer = new Utf8JsonWriter(_output))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("kind", "sprite-definition");
+                writer.WriteNumber("spriteId", definition.Id);
+                writer.WritePropertyName("value");
+                writer.WriteRawValue(definition.Bytes, skipInputValidation: true);
+                writer.WriteEndObject();
+                writer.Flush();
+            }
+            _output.WriteByte((byte) '\n');
+            _outputMs += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        }
+    }
+
+    private sealed record SpriteDefinition(int Id, SpriteHead Head, LayerValue[] Layers,
+        PostShaderValue[] Posts, byte[] Bytes)
+    {
+        public bool Matches(SpriteHead head, ReadOnlySpan<LayerValue> layers, ReadOnlySpan<PostShaderValue> posts)
+            => Head == head && layers.SequenceEqual(Layers) && posts.SequenceEqual(Posts);
+    }
+
+    private readonly record struct SpriteHead(bool Visible, bool ContainerOccluded, int DrawDepth,
+        uint RenderOrder, ColorValue Color, VectorValue Scale, VectorValue Offset, double Rotation,
+        bool NoRotation, bool SnapCardinals, bool EnableDirectionOverride, string DirectionOverride,
+        bool GranularLayersRendering);
+
+    private readonly record struct LayerValue(int Index, bool Visible, ColorValue Color, VectorValue Scale,
+        VectorValue Offset, double Rotation, string? RsiPath, string? RsiState, string? TexturePath,
+        int AnimationFrame, float AnimationTimeLeft, bool AutoAnimated, bool Loop, bool Cycle, bool Reversed,
+        string DirectionOffset, string RenderingStrategy, string? ShaderPrototype, bool HasShader,
+        bool? MaterialMutable, bool ShaderParametersUnavailable, bool CopyToShader);
+
+    private readonly record struct PostShaderValue(string Id, bool HasShader, bool GetScreenTexture,
+        bool RaiseShaderEvent, bool ShaderParametersUnavailable);
+
+    private readonly record struct VectorValue(float X, float Y)
+    {
+        public static VectorValue From(System.Numerics.Vector2 value) => new(value.X, value.Y);
+    }
+
+    private readonly record struct ColorValue(float R, float G, float B, float A)
+    {
+        public static ColorValue From(Robust.Shared.Maths.Color value) => new(value.R, value.G, value.B, value.A);
+    }
+
+    private static string EnumName<T>(T value) where T : struct, Enum
+        => EnumNames<T>.Names.TryGetValue(value, out var name) ? name : value.ToString();
+
+    private static class EnumNames<T> where T : struct, Enum
+    {
+        public static readonly Dictionary<T, string> Names = Enum.GetValues<T>().ToDictionary(v => v, v => v.ToString());
+    }
+}
