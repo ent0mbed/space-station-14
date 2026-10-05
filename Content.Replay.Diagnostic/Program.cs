@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Robust.Client;
+using Robust.Client.Replays.Loading;
 using Robust.Shared;
 
 namespace Content.Replay.Diagnostic;
@@ -22,6 +23,11 @@ internal static class Program
     public static string Input = "";
     public static string Output = "";
     public static double Seconds = 10;
+    public static ReplayClipProfile Profile = ReplayClipProfile.TenSecond;
+    public static object ClipLimits => new { maxSeconds = Profile.MaxDuration.TotalSeconds,
+        maxStates = Profile.MaxStates, maxNativeBlocks = Profile.MaxBlocks,
+        requiredTickRate = Profile.RequiredTickRate, maxNativeBlockBytes = ReplayClipDiagnostics.MaxBlockBytes,
+        maxNativeDecodedBytes = ReplayClipDiagnostics.MaxDecodedBytes };
     public static bool CaptureTiles;
     public static double ResourceVerificationMilliseconds;
     public static string ResourceBundleSha256 = "";
@@ -38,21 +44,33 @@ internal static class Program
         try
         {
             var values = new Dictionary<string, string>();
+            string[] supportedOptions = ["--input", "--resources", "--output", "--seconds", "--profile", "--tiles",
+                "--max-sprite-definitions", "--max-sprite-definition-bytes", "--max-resource-definitions"];
             for (var i = 0; i < args.Length; i += 2)
             {
                 if (i + 1 >= args.Length)
-                    throw new ArgumentException("Arguments require --input, --resources, --output and optional --seconds.");
+                    throw new ArgumentException("Each option requires a value; required: --input, --resources, --output.");
+                if (!supportedOptions.Contains(args[i], StringComparer.Ordinal))
+                    throw new ArgumentException($"Unknown option: {args[i]}.");
                 values.Add(args[i], args[i + 1]);
             }
             Input = Path.GetFullPath(values["--input"]);
             Output = Path.GetFullPath(values["--output"]);
             var resources = Path.GetFullPath(values["--resources"]);
+            if (values.TryGetValue("--profile", out var profile))
+                Profile = profile switch
+                {
+                    "ten-second" => ReplayClipProfile.TenSecond,
+                    "minute-preview" => ReplayClipProfile.MinutePreview,
+                    _ => throw new ArgumentException($"Unknown clip profile: {profile}.")
+                };
             if (values.TryGetValue("--seconds", out var seconds))
                 Seconds = double.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture);
             if (values.TryGetValue("--tiles", out var tiles))
                 CaptureTiles = bool.Parse(tiles);
-            if (!double.IsFinite(Seconds) || Seconds <= 0 || Seconds > 10)
-                throw new ArgumentOutOfRangeException(nameof(Seconds), "The diagnostic is capped at ten simulated seconds.");
+            if (!double.IsFinite(Seconds) || Seconds <= 0 || Seconds > Profile.MaxDuration.TotalSeconds
+                || TimeSpan.FromSeconds(Seconds) <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(Seconds), $"Invalid duration for {Profile.Name}; maximum {Profile.MaxDuration.TotalSeconds} simulated seconds.");
             if (values.TryGetValue("--max-sprite-definitions", out var definitions))
                 MaxSpriteDefinitions = int.Parse(definitions);
             if (values.TryGetValue("--max-sprite-definition-bytes", out var bytes))

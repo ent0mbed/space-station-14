@@ -86,7 +86,7 @@ public sealed partial class CaptureRunner
         _configuration.SetCVar(CVars.ReplayLoadedBlockWindow, 2);
         // A forward-only clip needs its initial checkpoint, never periodic scrubbing checkpoints.
         _configuration.SetCVar(CVars.CheckpointMinInterval, int.MaxValue);
-        var native = new ReplayClipDiagnostics();
+        var native = new ReplayClipDiagnostics(Program.Profile);
         var loadTimer = Stopwatch.StartNew();
         var reader = new ReplayFileReaderZip(ZipFile.OpenRead(Program.Input), ReplayConstants.ReplayZipFolder);
         var headerMetadata = _loader.LoadYamlMetadata(reader)!;
@@ -129,6 +129,7 @@ public sealed partial class CaptureRunner
             : null;
         _output = output;
         Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
+            clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
             requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
@@ -271,6 +272,7 @@ public sealed partial class CaptureRunner
         var tileSummary = tileCapture?.Finish() ?? NativeTileCapture.DisabledSummary;
 
         var summary = new { schema = Program.SummarySchema,
+            clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
             requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
