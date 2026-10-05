@@ -23,7 +23,12 @@ public sealed partial class CaptureRunner
     private int _captureSequence;
 
     private void OnNativeMove(ref MoveEvent ev) => _nativeMoved.Add(ev.Sender);
-    private void OnNativeDelete(Entity<MetaDataComponent> entity) => _nativeDeleted.Add(entity.Comp.NetEntity.Id);
+    private void OnNativeDelete(Entity<MetaDataComponent> entity)
+    {
+        _nativeDeleted.Add(entity.Comp.NetEntity.Id);
+        // Native deletion emits a detach move before disposing its protected components.
+        _nativeMoved.Remove(entity.Owner);
+    }
 
     private void BeginProjection(GameState state, List<int> deletes, List<object> audioEvents)
     {
@@ -88,13 +93,19 @@ public sealed partial class CaptureRunner
     private void ProjectMoved(List<object> upserts, List<object> audioEvents, bool initial)
     {
         // Native reparenting and recursive deletion can affect actors absent from EntityStates.
-        foreach (var uid in _nativeMoved.OrderBy(uid => _entities.GetNetEntity(uid).Id))
+        var ordered = new List<(EntityUid Uid, int Id)>();
+        foreach (var uid in _nativeMoved)
         {
-            if (!_entities.TryGetComponent<MetaDataComponent>(uid, out var metadata)
-                || metadata.EntityLifeStage >= EntityLifeStage.Terminating || _frameDeleted.Contains(metadata.NetEntity.Id))
+            if (!_entities.TryGetComponent<MetaDataComponent>(uid, out var metadata))
+                throw new InvalidDataException($"Moved native entity {uid.Id} is missing required metadata without an observed deletion.");
+            if (metadata.EntityLifeStage >= EntityLifeStage.Terminating || _frameDeleted.Contains(metadata.NetEntity.Id))
                 continue;
             if (metadata.NetEntity.IsClientSide() && !_fingerprints.ContainsKey(metadata.NetEntity.Id))
                 continue;
+            ordered.Add((uid, metadata.NetEntity.Id));
+        }
+        foreach (var (uid, _) in ordered.OrderBy(entity => entity.Id))
+        {
             _movedCandidates++;
             ProjectNative(uid, upserts, audioEvents, initial);
         }
