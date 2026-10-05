@@ -10,7 +10,9 @@ dotnet Content.Replay.Diagnostic.dll --input REPLAY.zip --resources MATCHING-CLI
 
 `minute-preview` admits at most 60 simulated seconds, 1801 states and 64 native
 blocks. It requires the recorded tick rate to remain 30 Hz: metadata and every
-streamed state are checked, including replicated tick-rate changes. The initial
+recorded tick-rate assignment in init messages and streamed states are checked,
+before those messages enter checkpoint generation. Checking every assignment
+avoids ambiguity from native checkpoint message reversal. The initial
 state plus 1800 tick periods fits that state budget. These are named immutable
 policies shared by CLI admission and the pinned native reader, not caller-supplied
 guard overrides. Unknown profiles/options, nonfinite/nonpositive durations and

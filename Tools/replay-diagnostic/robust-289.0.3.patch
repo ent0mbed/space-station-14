@@ -94,7 +94,7 @@ index a48c1b271..aa2aea9a3 100644
      }
 
 diff --git a/Robust.Client/Replays/Loading/ReplayLoadManager.Read.cs b/Robust.Client/Replays/Loading/ReplayLoadManager.Read.cs
-index 88a9c7458..9d13ddda0 100644
+index 88a9c7458..f27f3ae91 100644
 --- a/Robust.Client/Replays/Loading/ReplayLoadManager.Read.cs
 +++ b/Robust.Client/Replays/Loading/ReplayLoadManager.Read.cs
 @@ -19,7 +19,20 @@ namespace Robust.Client.Replays.Loading;
@@ -119,7 +119,7 @@ index 88a9c7458..9d13ddda0 100644
      {
          // NOTE: fileReader is NOT disposed here. Ownership is transferred to the BufferedReplayDataProvider
          // below, which keeps reading data blocks lazily during playback and disposes the reader when the
-@@ -34,6 +47,7 @@ public sealed partial class ReplayLoadManager
+@@ -34,12 +47,14 @@ public sealed partial class ReplayLoadManager
 
          var compressionContext = new ZStdCompressionContext();
          var metaData = LoadMetadata(fileReader);
@@ -127,7 +127,14 @@ index 88a9c7458..9d13ddda0 100644
 
          var totalData = fileReader.AllFiles.Count(x => x.Filename.StartsWith(DataFilePrefix));
 
-@@ -52,7 +66,7 @@ public sealed partial class ReplayLoadManager
+         // Init messages are consumed at the very start of checkpoint generation, so load them up front.
+         var initData = LoadInitFile(fileReader, compressionContext);
+         compressionContext.Dispose();
++        diagnostics?.Profile.ValidateMessages(initData);
+
+         // Index of which data file backs which range of tick indices, so the provider can re-read blocks
+         // lazily during playback instead of keeping everything resident.
+@@ -52,7 +67,7 @@ public sealed partial class ReplayLoadManager
          var (checkpoints, serverTime) = await GenerateCheckpointsAsync(
              initData,
              metaData.CVars,
@@ -136,7 +143,7 @@ index 88a9c7458..9d13ddda0 100644
              stats,
              callback);
 
-@@ -67,7 +81,9 @@ public sealed partial class ReplayLoadManager
+@@ -67,7 +82,9 @@ public sealed partial class ReplayLoadManager
              blocks.ToArray(),
              stats.TickCount,
              _loadedBlockWindow,
@@ -147,7 +154,7 @@ index 88a9c7458..9d13ddda0 100644
 
          // The streaming pass churns a lot of transient per-block data, some of which gets promoted to
          // Gen2/LOH before dying. Compact once so playback starts with a tight heap. One-off cost.
-@@ -114,11 +130,17 @@ public sealed partial class ReplayLoadManager
+@@ -114,11 +131,17 @@ public sealed partial class ReplayLoadManager
          IReplayFileReader fileReader,
          int totalData,
          List<BufferedReplayDataProvider.BlockMeta> blocks,
@@ -166,7 +173,7 @@ index 88a9c7458..9d13ddda0 100644
          while (fileReader.Exists(name))
          {
              var blockStart = stats.TickCount;
-@@ -127,18 +149,62 @@ public sealed partial class ReplayLoadManager
+@@ -127,18 +150,63 @@ public sealed partial class ReplayLoadManager
              using (var fileStream = fileReader.Open(name))
              using (var decompressStream = new ZStdDecompressStream(fileStream, false))
              {
@@ -205,6 +212,7 @@ index 88a9c7458..9d13ddda0 100644
 +
 +                    if (clipDuration != null)
 +                    {
++                        diagnostics!.Profile.ValidateMessages(msg);
 +                        foreach (var message in msg.Messages)
 +                        {
 +                            if (message is not ReplayMessage.CvarChangeMsg change)
@@ -231,7 +239,7 @@ index 88a9c7458..9d13ddda0 100644
 
                      if (stats.TickCount == 0)
                          stats.FirstTick = state.ToSequence;
-@@ -151,8 +217,10 @@ public sealed partial class ReplayLoadManager
+@@ -151,8 +219,10 @@ public sealed partial class ReplayLoadManager
 
              var blockCount = stats.TickCount - blockStart;
              if (blockCount > 0)
@@ -243,7 +251,7 @@ index 88a9c7458..9d13ddda0 100644
 
              name = new ResPath($"{DataFilePrefix}{i++}.{Ext}");
          }
-@@ -241,3 +309,53 @@ public sealed partial class ReplayLoadManager
+@@ -241,3 +311,65 @@ public sealed partial class ReplayLoadManager
          return (data, cvars, duration, _timing.CurTime, clientSide);
      }
  }
@@ -276,6 +284,18 @@ index 88a9c7458..9d13ddda0 100644
 +    {
 +        if (RequiredTickRate is { } required && rate != required)
 +            throw new InvalidDataException($"{Name} requires a constant {required} Hz replay; observed {rate} Hz.");
++    }
++
++    public void ValidateMessages(ReplayMessage? messages)
++    {
++        if (RequiredTickRate == null || messages == null)
++            return;
++        // Check every assignment: checkpoint generation consumes messages in reverse order.
++        foreach (var message in messages.Messages)
++            if (message is ReplayMessage.CvarChangeMsg change)
++                foreach (var (key, value) in change.ReplicatedCvars)
++                    if (key == CVars.NetTickrate.Name)
++                        ValidateTickRate((int) value);
 +    }
 +}
 +
