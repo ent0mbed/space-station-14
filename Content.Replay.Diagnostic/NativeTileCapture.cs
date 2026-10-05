@@ -1,15 +1,18 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Text.Json;
+using Robust.Client.GameObjects;
+using Robust.Client.ResourceManagement;
 using Robust.Shared.Map;
 using Robust.Shared.Map.Components;
 using Robust.Shared.Maths;
 
 namespace Content.Replay.Diagnostic;
 
-public sealed partial class CaptureRunner
+/// <summary>One replay clip's tile projection, resources, subscription, and companion output.</summary>
+public sealed class NativeTileCapture : IDisposable
 {
-    private const string TileSchema = "ss14-diagnostic-tiles/0.1";
+    public const string Schema = "ss14-diagnostic-tiles/0.1";
     private const int ExportChunkSize = 16;
     private const int TilePixels = 32;
     private const int MaxTileGrids = 4096;
@@ -18,10 +21,18 @@ public sealed partial class CaptureRunner
     private const int MaxNonemptyTiles = 500_000;
     private const long MaxTileOutputBytes = 256L * 1024 * 1024;
 
-    [Dependency] private ITileDefinitionManager _tileDefinitions = default!;
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private readonly IClientEntityManager _entities;
+    private readonly IResourceCache _resources;
+    private readonly ITileDefinitionManager _tileDefinitions;
+    private readonly Func<int, bool> _sceneContains;
+    private readonly long _sourceClockOrigin;
+    private readonly SharedMapSystem _tileMap;
+    private readonly DiagnosticTileSystem _tileObserver;
     private FileStream? _tileOutput;
-    private SharedMapSystem _tileMap = default!;
-    private DiagnosticTileSystem _tileObserver = default!;
+    private bool _subscribed;
+    private bool _finished;
+    private bool _disposed;
     private readonly Dictionary<int, TileGrid> _tileGrids = new();
     private readonly HashSet<int> _tileDefinitionIds = new();
     private readonly Dictionary<string, TileImage> _tileImages = new(StringComparer.Ordinal);
@@ -53,13 +64,28 @@ public sealed partial class CaptureRunner
     private sealed record TileImage(string Path, int Width, int Height);
     private sealed record TileChunkRecord(int GridId, int X, int Y, string Action, List<int[]> Tiles);
 
-    private void StartTiles(FileStream output, int frameCount, uint sourceStartTick, int? roundId)
+    public NativeTileCapture(IClientEntityManager entities, IResourceCache resources,
+        ITileDefinitionManager definitions, Func<int, bool> sceneContains, long sourceClockOrigin)
     {
-        _tileOutput = output;
+        _entities = entities;
+        _resources = resources;
+        _tileDefinitions = definitions;
+        _sceneContains = sceneContains;
+        _sourceClockOrigin = sourceClockOrigin;
         _tileMap = _entities.System<SharedMapSystem>();
         _tileObserver = _entities.System<DiagnosticTileSystem>();
+    }
+
+    public static object DisabledSummary => new { enabled = false, schema = Schema, file = (string?) null };
+
+    public void Start(string outputDirectory, int frameCount, uint sourceStartTick, int? roundId)
+    {
+        if (_disposed || _tileOutput != null)
+            throw new InvalidOperationException("Tile capture cannot be started twice or after disposal.");
+        _tileOutput = File.Create(Path.Combine(outputDirectory, "tiles.jsonl"));
         _tileObserver.TileChanged += OnNativeTileChanged;
-        WriteTiles(new { kind = "tile-header", schema = TileSchema, sceneSchema = "ss14-diagnostic/0.2",
+        _subscribed = true;
+        WriteTiles(new { kind = "tile-header", schema = Schema, sceneSchema = "ss14-diagnostic/0.2",
             capability = "grid-tiles", finalizedTransport = false, frameCount, timeUnit = "100ns",
             sourceClockOrigin100ns = _sourceClockOrigin, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion,
@@ -95,9 +121,9 @@ public sealed partial class CaptureRunner
     private static int TileIndex(Vector2i coordinate, Vector2i chunk) =>
         checked((coordinate.X - chunk.X * ExportChunkSize) * ExportChunkSize + coordinate.Y - chunk.Y * ExportChunkSize);
 
-    private void CaptureTiles(int sequence, uint sourceTick, long sourceTime100ns)
+    public void Capture(int sequence, uint sourceTick, long sourceTime100ns)
     {
-        if (_tileOutput == null) return;
+        RequireActive();
         var start = Stopwatch.GetTimestamp();
         if (_tileDirtyOverflow)
             throw new InvalidDataException("Diagnostic dirty tile-chunk budget exceeded.");
@@ -113,9 +139,9 @@ public sealed partial class CaptureRunner
                 || metadata.EntityLifeStage >= EntityLifeStage.Terminating)
                 continue;
             var id = metadata.NetEntity.Id;
-            if (metadata.NetEntity.IsClientSide() && !_fingerprints.ContainsKey(id))
+            if (metadata.NetEntity.IsClientSide() && !_sceneContains(id))
                 continue;
-            if (!metadata.NetEntity.Valid || !_fingerprints.ContainsKey(id))
+            if (!metadata.NetEntity.Valid || !_sceneContains(id))
                 throw new InvalidDataException($"Native tile grid {id} is absent from the scene graph.");
             if (ordered.Count >= MaxTileGrids)
                 throw new InvalidDataException("Diagnostic tile-grid budget exceeded.");
@@ -297,9 +323,9 @@ public sealed partial class CaptureRunner
         _tileDefinitionIds.Add(typeId);
     }
 
-    private object FinishTiles()
+    public object Finish()
     {
-        if (_tileOutput == null) return new { enabled = false, schema = TileSchema, file = (string?) null };
+        RequireActive();
         var start = Stopwatch.GetTimestamp();
         var checkedTiles = 0;
         var variants = new HashSet<byte>();
@@ -328,9 +354,10 @@ public sealed partial class CaptureRunner
         if (checkedTiles != _tileCount)
             throw new InvalidDataException("Final native/projected total tile count differs.");
         _tileValidationMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-        _tileOutput.Flush();
-        _tileObserver.TileChanged -= OnNativeTileChanged;
-        return new { enabled = true, schema = TileSchema, file = "tiles.jsonl", sceneSchema = "ss14-diagnostic/0.2",
+        _tileOutput!.Flush();
+        Unsubscribe();
+        _finished = true;
+        return new { enabled = true, schema = Schema, file = "tiles.jsonl", sceneSchema = "ss14-diagnostic/0.2",
             frames = _tileFrames, initialGrids = _initialTileGrids, finalGrids = _tileGrids.Count,
             initialNonemptyTiles = _initialTileCount, finalNonemptyTiles = _tileCount,
             initialChunks = _initialTileChunks, finalChunks = _tileChunkCount,
@@ -341,6 +368,32 @@ public sealed partial class CaptureRunner
             finalRotatedOrMirroredTiles = rotated, finalFlaggedTiles = flagged,
             captureMilliseconds = _tileCaptureMs, outputMilliseconds = _tileOutputMs,
             finalValidationMilliseconds = _tileValidationMs, outputBytes = _tileOutput.Length };
+    }
+
+    private void RequireActive()
+    {
+        if (_disposed || _finished || _tileOutput == null)
+            throw new InvalidOperationException("Tile capture is not active.");
+    }
+
+    private void Unsubscribe()
+    {
+        if (!_subscribed) return;
+        _tileObserver.TileChanged -= OnNativeTileChanged;
+        _subscribed = false;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        Unsubscribe();
+        _tileGrids.Clear();
+        _dirtyTileChunks.Clear();
+        _tileImages.Clear();
+        _tileDefinitionIds.Clear();
+        _activeTileGrids.Clear();
+        _tileOutput?.Dispose();
     }
 
     private void WriteTiles<T>(T record)

@@ -90,6 +90,13 @@ frame record carries at most 64 chunks. Dirty chunk keys are coalesced per nativ
 step and cleared after projection; there is no retained event history. Native
 tile events are observed by a diagnostic entity system subscribed before the
 native event bus freezes, then connected only after initial replay loading.
+`NativeTileCapture` owns one run's projection cache, resource catalog, output
+stream, and subscription. `CaptureRunner` only coordinates Start/Capture/Finish;
+its using scope disposes the listener and stream on success or failure. No tile
+state is stored in the runner's sprite or hierarchy caches.
+The runner's native texture/move/deletion hooks are released in a finally block,
+then StopReplay unloads the replay. These caches are capture-scoped; this change
+does not retain a mutable native world or prototype registry across rounds.
 
 After every frame the projected nonempty count must equal the native count on
 each grid. At the end, one full enumeration compares every surviving native
