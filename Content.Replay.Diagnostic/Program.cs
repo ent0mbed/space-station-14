@@ -15,6 +15,7 @@ internal static class Program
     public static string Input = "";
     public static string Output = "";
     public static double Seconds = 10;
+    public static bool CaptureTiles;
     public static double ResourceVerificationMilliseconds;
     public static string ResourceBundleSha256 = "";
     public static string ForkId = "";
@@ -41,6 +42,8 @@ internal static class Program
             var resources = Path.GetFullPath(values["--resources"]);
             if (values.TryGetValue("--seconds", out var seconds))
                 Seconds = double.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture);
+            if (values.TryGetValue("--tiles", out var tiles))
+                CaptureTiles = bool.Parse(tiles);
             if (!double.IsFinite(Seconds) || Seconds <= 0 || Seconds > 10)
                 throw new ArgumentOutOfRangeException(nameof(Seconds), "The diagnostic is capped at ten simulated seconds.");
             if (values.TryGetValue("--max-sprite-definitions", out var definitions))

@@ -14,6 +14,7 @@ using Robust.Shared;
 using Robust.Shared.Audio.Components;
 using Robust.Shared.Configuration;
 using Robust.Shared.Graphics.RSI;
+using Robust.Shared.Map;
 using Robust.Shared.Map.Components;
 using Robust.Shared.Replays;
 
@@ -30,6 +31,7 @@ public sealed partial class CaptureRunner
     [Dependency] private IResourceCache _resources = default!;
     [Dependency] private IConfigurationManager _configuration = default!;
     [Dependency] private IComponentFactory _factory = default!;
+    [Dependency] private ITileDefinitionManager _tileDefinitions = default!;
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<int, string> _fingerprints = new();
@@ -54,12 +56,32 @@ public sealed partial class CaptureRunner
     private int _audioRemovals;
     private long _sourceClockOrigin;
     private long _projectionAllocatedBytes;
+    private SharedTransformSystem? _captureTransformSystem;
 
     public async Task RunAsync()
     {
+        _captureTransformSystem = null;
+        _resources.OnRawTextureLoaded += OnTexture;
+        try
+        {
+            await CaptureAsync();
+        }
+        finally
+        {
+            _resources.OnRawTextureLoaded -= OnTexture;
+            if (_captureTransformSystem is { } transformSystem)
+                transformSystem.OnGlobalMoveEvent -= OnNativeMove;
+            _captureTransformSystem = null;
+            _entities.EntityDeleted -= OnNativeDelete;
+            if (_playback.Replay != null)
+                _playback.StopReplay();
+        }
+    }
+
+    private async Task CaptureAsync()
+    {
         var startupMs = Program.Total.Elapsed.TotalMilliseconds;
         var startupAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - Program.AllocatedAtStart;
-        _resources.OnRawTextureLoaded += OnTexture;
         _configuration.SetCVar(CVars.ReplayIgnoreErrors, false);
         _configuration.SetCVar(CVars.ReplayLoadedBlockWindow, 2);
         // A forward-only clip needs its initial checkpoint, never periodic scrubbing checkpoints.
@@ -81,8 +103,8 @@ public sealed partial class CaptureRunner
         var startTimer = Stopwatch.StartNew();
         await _loader.StartReplayAsync(data, (_, _, _, _) => Task.CompletedTask);
         var initializeMs = startTimer.Elapsed.TotalMilliseconds;
-        var transformSystem = _entities.System<SharedTransformSystem>();
-        transformSystem.OnGlobalMoveEvent += OnNativeMove;
+        _captureTransformSystem = _entities.System<SharedTransformSystem>();
+        _captureTransformSystem.OnGlobalMoveEvent += OnNativeMove;
         _entities.EntityDeleted += OnNativeDelete;
         var initializedAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true);
         var checkpoint = data.Checkpoints[0];
@@ -99,7 +121,12 @@ public sealed partial class CaptureRunner
             _texturePaths.TryAdd(texture.Texture, path.ToString());
         var resourceIndexMs = resourceTimer.Elapsed.TotalMilliseconds;
 
+        // A failed overwrite must not retain the previous run's success/capability metadata.
+        File.Delete(Path.Combine(Program.Output, "summary.json"));
         using var output = File.Create(Path.Combine(Program.Output, "scene.jsonl"));
+        using var tileCapture = Program.CaptureTiles
+            ? new NativeTileCapture(_entities, _resources, _tileDefinitions, _fingerprints.ContainsKey, _sourceClockOrigin)
+            : null;
         _output = output;
         Write(new { kind = "diagnostic-header", schema = "ss14-diagnostic/0.2", gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
@@ -120,6 +147,7 @@ public sealed partial class CaptureRunner
                 .Select(assembly => new { name = assembly.GetName().Name,
                     version = assembly.GetName().Version?.ToString(),
                     moduleVersionId = assembly.ManifestModule.ModuleVersionId }).ToArray() });
+        tileCapture?.Start(Program.Output, data.Count, data.TickOffset.Value, roundId);
 
         var simulation = Stopwatch.StartNew();
         var loopAllocatedStart = GC.GetTotalAllocatedBytes(precise: true);
@@ -209,6 +237,7 @@ public sealed partial class CaptureRunner
                     sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
                     upserts = index == 0 ? upserts.Skip(chunk * 1000).Take(1000) : upserts,
                     deletes, audioEvents = chunk == 0 ? audioEvents : [] });
+            tileCapture?.Capture(index, state.ToSequence.Value, data.ReplayTime[index].Ticks);
         }
         simulation.Stop();
         var loopAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - loopAllocatedStart;
@@ -237,6 +266,7 @@ public sealed partial class CaptureRunner
         WriteResourceDefinitions();
         Write(inventory);
         output.Flush();
+        var tileSummary = tileCapture?.Finish() ?? NativeTileCapture.DisabledSummary;
 
         var summary = new { schema = "ss14-diagnostic-summary/0.2", gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
@@ -262,6 +292,7 @@ public sealed partial class CaptureRunner
                 clientAncestors = _clientAncestors, movedCandidates = _movedCandidates,
                 observedNativeDeletions = _observedDeletions, maximumDepth = _maxParentDepth,
                 firstTransitionAncestors = _firstTransitionAncestors },
+            tiles = tileSummary,
             allocationsBytes = new { startup = startupAllocatedBytes,
                 loadAndCheckpoint = loadedAllocatedBytes - Program.AllocatedAtStart - startupAllocatedBytes,
                 entityInitialization = initializedAllocatedBytes - loadedAllocatedBytes,
@@ -273,10 +304,6 @@ public sealed partial class CaptureRunner
             outputBytes = output.Length, diagnosticOnly = true };
         File.WriteAllBytes(Path.Combine(Program.Output, "summary.json"), JsonSerializer.SerializeToUtf8Bytes(summary, Json));
         Console.WriteLine(JsonSerializer.Serialize(summary, Json));
-        _resources.OnRawTextureLoaded -= OnTexture;
-        transformSystem.OnGlobalMoveEvent -= OnNativeMove;
-        _entities.EntityDeleted -= OnNativeDelete;
-        _playback.StopReplay();
     }
 
     private void Capture(EntityUid uid, TransformComponent transform, MetaDataComponent metadata,
