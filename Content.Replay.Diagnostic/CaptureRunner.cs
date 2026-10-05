@@ -81,6 +81,9 @@ public sealed partial class CaptureRunner
         var startTimer = Stopwatch.StartNew();
         await _loader.StartReplayAsync(data, (_, _, _, _) => Task.CompletedTask);
         var initializeMs = startTimer.Elapsed.TotalMilliseconds;
+        var transformSystem = _entities.System<SharedTransformSystem>();
+        transformSystem.OnGlobalMoveEvent += OnNativeMove;
+        _entities.EntityDeleted += OnNativeDelete;
         var initializedAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true);
         var checkpoint = data.Checkpoints[0];
         var sourceTickRate = (int) checkpoint.Cvars[CVars.NetTickrate.Name];
@@ -158,6 +161,8 @@ public sealed partial class CaptureRunner
             List<object> upserts = new();
             List<int> deletes = new();
             List<object> audioEvents = new();
+            _captureSequence = index;
+            BeginProjection(state, deletes, audioEvents);
             if (index == 0)
             {
                 var ordered = new List<(EntityUid Uid, TransformComponent Transform, MetaDataComponent Metadata)>();
@@ -172,8 +177,7 @@ public sealed partial class CaptureRunner
                 }
                 ordered.Sort((a, b) => a.Metadata.NetEntity.Id.CompareTo(b.Metadata.NetEntity.Id));
                 foreach (var entity in ordered)
-                    Capture(entity.Uid, entity.Transform, entity.Metadata, upserts, audioEvents, true);
-                _initialEntities = upserts.Count;
+                    ProjectNative(entity.Uid, upserts, audioEvents, true);
             }
             else
             {
@@ -185,20 +189,12 @@ public sealed partial class CaptureRunner
                         || !_entities.TryGetComponent<TransformComponent>(uid, out var transform)
                         || !_entities.TryGetComponent<MetaDataComponent>(uid, out var metadata))
                         continue;
-                    Capture(uid.Value, transform, metadata, upserts, audioEvents, false);
-                }
-                foreach (var deleted in state.EntityDeletions.Value)
-                {
-                    if (_fingerprints.Remove(deleted.Id))
-                        deletes.Add(deleted.Id);
-                    _previousSprites.Remove(deleted.Id);
-                    if (_audio.Remove(deleted.Id))
-                    {
-                        _audioRemovals++;
-                        audioEvents.Add(new { kind = "remove", id = deleted.Id });
-                    }
+                    ProjectNative(uid.Value, upserts, audioEvents, false);
                 }
             }
+            ProjectMoved(upserts, audioEvents, index == 0);
+            if (index == 0)
+                _initialEntities = upserts.Count;
             _projectionMs += Stopwatch.GetElapsedTime(projectionStart).TotalMilliseconds;
             _projectionAllocatedBytes += GC.GetTotalAllocatedBytes(precise: false) - projectionAllocatedStart;
             _upserts += upserts.Count;
@@ -262,6 +258,10 @@ public sealed partial class CaptureRunner
                 spriteDefinitionBytes = _spriteDefinitionBytes, previousSpriteReuses = _previousSpriteReuses,
                 sharedSpriteReuses = _sharedSpriteReuses, resourceDefinitions = _resourceDefinitions.Count,
                 uniqueRsiObjectsReferenced = _rsiResourceIds.Count },
+            parentClosure = new { ancestorCandidates = _ancestorCandidates, ancestorAdditions = _ancestorAdditions,
+                clientAncestors = _clientAncestors, movedCandidates = _movedCandidates,
+                observedNativeDeletions = _observedDeletions, maximumDepth = _maxParentDepth,
+                firstTransitionAncestors = _firstTransitionAncestors },
             allocationsBytes = new { startup = startupAllocatedBytes,
                 loadAndCheckpoint = loadedAllocatedBytes - Program.AllocatedAtStart - startupAllocatedBytes,
                 entityInitialization = initializedAllocatedBytes - loadedAllocatedBytes,
@@ -274,6 +274,8 @@ public sealed partial class CaptureRunner
         File.WriteAllBytes(Path.Combine(Program.Output, "summary.json"), JsonSerializer.SerializeToUtf8Bytes(summary, Json));
         Console.WriteLine(JsonSerializer.Serialize(summary, Json));
         _resources.OnRawTextureLoaded -= OnTexture;
+        transformSystem.OnGlobalMoveEvent -= OnNativeMove;
+        _entities.EntityDeleted -= OnNativeDelete;
         _playback.StopReplay();
     }
 
