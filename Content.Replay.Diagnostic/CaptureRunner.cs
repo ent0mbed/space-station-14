@@ -85,7 +85,15 @@ public sealed partial class CaptureRunner
         _output = output;
         Write(new { kind = "diagnostic-header", schema = "ss14-diagnostic/0.1", gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
-            sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false });
+            sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
+            loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies()
+                .Where(assembly => !assembly.IsDynamic && assembly.GetName().Name is { } name
+                    && (name.StartsWith("Content.", StringComparison.Ordinal)
+                        || name.StartsWith("Robust.", StringComparison.Ordinal)))
+                .OrderBy(assembly => assembly.GetName().Name)
+                .Select(assembly => new { name = assembly.GetName().Name,
+                    version = assembly.GetName().Version?.ToString(),
+                    moduleVersionId = assembly.ManifestModule.ModuleVersionId }).ToArray() });
 
         var simulation = Stopwatch.StartNew();
         double applyMs = 0;

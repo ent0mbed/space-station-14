@@ -64,15 +64,7 @@ internal static class Program
             Directory.CreateDirectory(Output);
 
             // Mount this adapter and its matching assemblies separately from build resources.
-            var moduleRoot = Path.Combine(Output, "runtime-modules");
-            var assemblies = Path.Combine(moduleRoot, "Assemblies");
-            Directory.CreateDirectory(assemblies);
-            foreach (var dll in Directory.EnumerateFiles(AppContext.BaseDirectory, "Content.*.dll"))
-            {
-                var target = Path.Combine(assemblies, Path.GetFileName(dll));
-                if (!File.Exists(target))
-                    File.CreateSymbolicLink(target, dll);
-            }
+            var moduleRoot = PrepareModuleRoot(Output, AppContext.BaseDirectory);
             ContentStart.StartLibrary(["--headless"], new GameControllerOptions
             {
                 Sandboxing = false,
@@ -89,5 +81,17 @@ internal static class Program
             Console.Error.WriteLine(exception);
             Environment.ExitCode = 1;
         }
+    }
+
+    internal static string PrepareModuleRoot(string output, string binaries)
+    {
+        // A previous checkout may have been removed, leaving dangling DLL links.
+        // Each invocation owns fresh links so reusing Output cannot load an older adapter.
+        var moduleRoot = Path.Combine(output, "runtime-modules", Guid.NewGuid().ToString("N"));
+        var assemblies = Path.Combine(moduleRoot, "Assemblies");
+        Directory.CreateDirectory(assemblies);
+        foreach (var dll in Directory.EnumerateFiles(binaries, "Content.*.dll"))
+            File.CreateSymbolicLink(Path.Combine(assemblies, Path.GetFileName(dll)), dll);
+        return moduleRoot;
     }
 }
