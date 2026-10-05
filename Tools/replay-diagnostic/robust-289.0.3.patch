@@ -1,0 +1,254 @@
+diff --git a/Robust.Client/Replays/Loading/BufferedReplayDataProvider.cs b/Robust.Client/Replays/Loading/BufferedReplayDataProvider.cs
+index a48c1b271..aa2aea9a3 100644
+--- a/Robust.Client/Replays/Loading/BufferedReplayDataProvider.cs
++++ b/Robust.Client/Replays/Loading/BufferedReplayDataProvider.cs
+@@ -32,12 +32,14 @@ public sealed class BufferedReplayDataProvider : IReplayDataProvider
+         public readonly ResPath FileName;
+         public readonly int Start;
+         public readonly int Count;
++        public readonly bool Partial;
+
+-        public BlockMeta(ResPath fileName, int start, int count)
++        public BlockMeta(ResPath fileName, int start, int count, bool partial = false)
+         {
+             FileName = fileName;
+             Start = start;
+             Count = count;
++            Partial = partial;
+         }
+     }
+
+@@ -59,6 +61,8 @@ public sealed class BufferedReplayDataProvider : IReplayDataProvider
+     private readonly BlockMeta[] _blocks;
+     private readonly int[] _blockStarts; // parallel to _blocks, for binary search
+     private readonly int _maxLoadedBlocks;
++    private readonly int _maxDecodedBlockBytes;
++    private readonly ReplayClipDiagnostics? _diagnostics;
+
+     private readonly Dictionary<int, LoadedBlock> _loaded = new();
+     private readonly Dictionary<int, LinkedListNode<int>> _lruNodes = new();
+@@ -74,7 +78,9 @@ public sealed class BufferedReplayDataProvider : IReplayDataProvider
+         BlockMeta[] blocks,
+         int count,
+         int maxLoadedBlocks,
+-        ISawmill sawmill)
++        ISawmill sawmill,
++        int maxDecodedBlockBytes = int.MaxValue,
++        ReplayClipDiagnostics? diagnostics = null)
+     {
+         _fileReader = fileReader;
+         _serializer = serializer;
+@@ -82,6 +88,8 @@ public sealed class BufferedReplayDataProvider : IReplayDataProvider
+         _sawmill = sawmill;
+         Count = count;
+         _maxLoadedBlocks = Math.Max(2, maxLoadedBlocks);
++        _maxDecodedBlockBytes = maxDecodedBlockBytes;
++        _diagnostics = diagnostics;
+
+         _blockStarts = new int[blocks.Length];
+         for (var i = 0; i < blocks.Length; i++)
+@@ -151,22 +159,27 @@ public sealed class BufferedReplayDataProvider : IReplayDataProvider
+
+     private LoadedBlock LoadBlock(in BlockMeta meta)
+     {
++        var readStart = System.Diagnostics.Stopwatch.GetTimestamp();
+         using var fileStream = _fileReader.Open(meta.FileName);
+         using var decompressStream = new ZStdDecompressStream(fileStream, false);
+
+         var intBuf = new byte[4];
+         fileStream.ReadExactly(intBuf);
+         var uncompressedSize = BitConverter.ToInt32(intBuf);
+-
+-        var ms = new MemoryStream(uncompressedSize);
+-        decompressStream.CopyTo(ms);
++        if (uncompressedSize <= 0 || uncompressedSize > _maxDecodedBlockBytes)
++            throw new InvalidDataException("Native block decompression budget exceeded.");
++        var blockBytes = new byte[uncompressedSize];
++        decompressStream.ReadExactly(blockBytes);
++        using var ms = new MemoryStream(blockBytes, writable: false);
++        if (decompressStream.ReadByte() != -1)
++            throw new InvalidDataException("Native block exceeds its declared decompressed size.");
+         ms.Position = 0;
+
+         var states = new GameState[meta.Count];
+         var messages = new ReplayMessage[meta.Count];
+
+         var i = 0;
+-        while (ms.Position < ms.Length)
++        while (i < meta.Count && ms.Position < ms.Length)
+         {
+             _serializer.DeserializeDirect(ms, out GameState state);
+             _serializer.DeserializeDirect(ms, out ReplayMessage msg);
+@@ -177,6 +190,13 @@ public sealed class BufferedReplayDataProvider : IReplayDataProvider
+         }
+
+         DebugTools.AssertEqual(i, meta.Count);
++        if (i != meta.Count || (!meta.Partial && ms.Position != ms.Length))
++            throw new InvalidDataException("Native block state count mismatch.");
++        if (_diagnostics != null)
++        {
++            _diagnostics.PlaybackReadMilliseconds += System.Diagnostics.Stopwatch.GetElapsedTime(readStart).TotalMilliseconds;
++            _diagnostics.PlaybackBlocksRead++;
++        }
+         return new LoadedBlock(states, messages);
+     }
+
+diff --git a/Robust.Client/Replays/Loading/ReplayLoadManager.Read.cs b/Robust.Client/Replays/Loading/ReplayLoadManager.Read.cs
+index 88a9c7458..515f2b58b 100644
+--- a/Robust.Client/Replays/Loading/ReplayLoadManager.Read.cs
++++ b/Robust.Client/Replays/Loading/ReplayLoadManager.Read.cs
+@@ -19,7 +19,20 @@ namespace Robust.Client.Replays.Loading;
+
+ public sealed partial class ReplayLoadManager
+ {
+-    public async Task<ReplayData> LoadReplayAsync(IReplayFileReader fileReader, LoadReplayCallback callback)
++    public Task<ReplayData> LoadReplayAsync(IReplayFileReader fileReader, LoadReplayCallback callback)
++        => LoadReplayInternal(fileReader, callback, null, null);
++
++    /// <summary>Diagnostic, version-specific clip reader. Never scans the remainder of a recording.</summary>
++    public Task<ReplayData> LoadReplayClipAsync(IReplayFileReader fileReader, LoadReplayCallback callback,
++        TimeSpan duration, ReplayClipDiagnostics diagnostics)
++    {
++        if (duration <= TimeSpan.Zero || duration > TimeSpan.FromSeconds(10))
++            throw new ArgumentOutOfRangeException(nameof(duration), "Diagnostic clips are limited to ten seconds.");
++        return LoadReplayInternal(fileReader, callback, duration, diagnostics);
++    }
++
++    private async Task<ReplayData> LoadReplayInternal(IReplayFileReader fileReader, LoadReplayCallback callback,
++        TimeSpan? clipDuration, ReplayClipDiagnostics? diagnostics)
+     {
+         // NOTE: fileReader is NOT disposed here. Ownership is transferred to the BufferedReplayDataProvider
+         // below, which keeps reading data blocks lazily during playback and disposes the reader when the
+@@ -52,7 +65,7 @@ public sealed partial class ReplayLoadManager
+         var (checkpoints, serverTime) = await GenerateCheckpointsAsync(
+             initData,
+             metaData.CVars,
+-            StreamHistory(fileReader, totalData, blocks, stats),
++            StreamHistory(fileReader, totalData, blocks, stats, clipDuration, diagnostics),
+             stats,
+             callback);
+
+@@ -67,7 +80,9 @@ public sealed partial class ReplayLoadManager
+             blocks.ToArray(),
+             stats.TickCount,
+             _loadedBlockWindow,
+-            _sawmill);
++            _sawmill,
++            diagnostics == null ? int.MaxValue : ReplayClipDiagnostics.MaxBlockBytes,
++            diagnostics);
+
+         // The streaming pass churns a lot of transient per-block data, some of which gets promoted to
+         // Gen2/LOH before dying. Compact once so playback starts with a tight heap. One-off cost.
+@@ -114,11 +129,17 @@ public sealed partial class ReplayLoadManager
+         IReplayFileReader fileReader,
+         int totalData,
+         List<BufferedReplayDataProvider.BlockMeta> blocks,
+-        HistoryStreamStats stats)
++        HistoryStreamStats stats,
++        TimeSpan? clipDuration,
++        ReplayClipDiagnostics? diagnostics)
+     {
+         var i = 0;
+         var intBuf = new byte[4];
+         var name = new ResPath($"{DataFilePrefix}{i++}.{Ext}");
++        var timeBase = _timing.TimeBase;
++        var rate = _confMan.GetCVar(CVars.NetTickrate);
++        TimeSpan? firstTime = null;
++        var stopped = false;
+         while (fileReader.Exists(name))
+         {
+             var blockStart = stats.TickCount;
+@@ -127,18 +148,61 @@ public sealed partial class ReplayLoadManager
+             using (var fileStream = fileReader.Open(name))
+             using (var decompressStream = new ZStdDecompressStream(fileStream, false))
+             {
++                var readStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                 fileStream.ReadExactly(intBuf);
+                 var uncompressedSize = BitConverter.ToInt32(intBuf);
++                if (diagnostics != null)
++                {
++                    if (uncompressedSize <= 0 || uncompressedSize > ReplayClipDiagnostics.MaxBlockBytes
++                        || diagnostics.BlocksRead >= ReplayClipDiagnostics.MaxBlocks
++                        || diagnostics.DecodedBytes + uncompressedSize > ReplayClipDiagnostics.MaxDecodedBytes)
++                        throw new InvalidDataException("Native clip decompression budget exceeded.");
++                    diagnostics.BlocksRead++;
++                    diagnostics.DecodedBytes += uncompressedSize;
++                }
+
+-                var decompressedStream = new MemoryStream(uncompressedSize);
+-                decompressStream.CopyTo(decompressedStream);
++                var blockBytes = new byte[uncompressedSize];
++                decompressStream.ReadExactly(blockBytes);
++                using var decompressedStream = new MemoryStream(blockBytes, writable: false);
++                if (decompressStream.ReadByte() != -1)
++                    throw new InvalidDataException("Native block exceeds its declared decompressed size.");
+                 decompressedStream.Position = 0;
+                 DebugTools.Assert(uncompressedSize == decompressedStream.Length);
++                if (diagnostics != null)
++                    diagnostics.ReadMilliseconds += System.Diagnostics.Stopwatch.GetElapsedTime(readStart).TotalMilliseconds;
+
+                 while (decompressedStream.Position < decompressedStream.Length)
+                 {
++                    var decodeStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                     _serializer.DeserializeDirect(decompressedStream, out GameState state);
+                     _serializer.DeserializeDirect(decompressedStream, out ReplayMessage msg);
++                    if (diagnostics != null)
++                        diagnostics.ReadMilliseconds += System.Diagnostics.Stopwatch.GetElapsedTime(decodeStart).TotalMilliseconds;
++
++                    if (clipDuration != null)
++                    {
++                        foreach (var message in msg.Messages)
++                        {
++                            if (message is not ReplayMessage.CvarChangeMsg change)
++                                continue;
++                            timeBase = change.TimeBase;
++                            foreach (var (key, value) in change.ReplicatedCvars)
++                                if (key == CVars.NetTickrate.Name)
++                                    rate = (int) value;
++                        }
++                        if (rate <= 0)
++                            throw new InvalidDataException("Invalid replay tick rate.");
++                        var time = timeBase.Item1 + (state.ToSequence.Value - timeBase.Item2.Value)
++                            * TimeSpan.FromTicks(TimeSpan.TicksPerSecond / rate);
++                        firstTime ??= time;
++                        if (time - firstTime.Value > clipDuration.Value)
++                        {
++                            stopped = true;
++                            break;
++                        }
++                        if (stats.TickCount >= ReplayClipDiagnostics.MaxStates)
++                            throw new InvalidDataException("Native clip state budget exceeded.");
++                    }
+
+                     if (stats.TickCount == 0)
+                         stats.FirstTick = state.ToSequence;
+@@ -151,8 +215,10 @@ public sealed partial class ReplayLoadManager
+
+             var blockCount = stats.TickCount - blockStart;
+             if (blockCount > 0)
+-                blocks.Add(new BufferedReplayDataProvider.BlockMeta(blockFile, blockStart, blockCount));
++                blocks.Add(new BufferedReplayDataProvider.BlockMeta(blockFile, blockStart, blockCount, stopped));
+             stats.BlocksRead++;
++            if (stopped)
++                yield break;
+
+             name = new ResPath($"{DataFilePrefix}{i++}.{Ext}");
+         }
+@@ -241,3 +307,17 @@ public sealed partial class ReplayLoadManager
+         return (data, cvars, duration, _timing.CurTime, clientSide);
+     }
+ }
++
++/// <summary>Bounded counters for the temporary diagnostic exporter; not part of native serialization.</summary>
++public sealed class ReplayClipDiagnostics
++{
++    public const int MaxStates = 601;
++    public const int MaxBlocks = 32;
++    public const int MaxBlockBytes = 64 * 1024 * 1024;
++    public const long MaxDecodedBytes = 256L * 1024 * 1024;
++    public int BlocksRead;
++    public long DecodedBytes;
++    public double ReadMilliseconds;
++    public double PlaybackReadMilliseconds;
++    public int PlaybackBlocksRead;
++}
