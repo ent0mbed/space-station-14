@@ -17,7 +17,7 @@ public sealed partial class CaptureRunner
     private int _previousSpriteReuses;
     private int _sharedSpriteReuses;
 
-    private int CaptureSprite(int entityId, SpriteComponent component, bool initial)
+    private int CaptureSprite(EntityUid uid, int entityId, SpriteComponent component, bool initial)
     {
         _spriteCandidates++;
         var nativeLayers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
@@ -46,7 +46,8 @@ public sealed partial class CaptureRunner
                 layer.AnimationFrame, layer.AnimationTimeLeft, layer.AutoAnimated, layer.Loop, layer.Cycle,
                 layer.Reversed, EnumName(layer.DirOffset), EnumName(layer.RenderingStrategy), shader,
                 layer.Shader != null, layer.Shader?.Mutable, layer.Shader != null,
-                layer.CopyToShaderParameters != null);
+                layer.CopyToShaderParameters != null,
+                CaptureShaderCopy((uid, component), layer.CopyToShaderParameters, nativeLayers.Count));
         }
         var nativePosts = _entities.System<SpriteSystem>().GetPostShaders(component);
         if (nativePosts.Count > _postScratch.Length)
@@ -150,7 +151,8 @@ public sealed partial class CaptureRunner
         VectorValue Offset, double Rotation, string? RsiPath, string? RsiState, string? TexturePath,
         int AnimationFrame, float AnimationTimeLeft, bool AutoAnimated, bool Loop, bool Cycle, bool Reversed,
         string DirectionOffset, string RenderingStrategy, string? ShaderPrototype, bool HasShader,
-        bool? MaterialMutable, bool ShaderParametersUnavailable, bool CopyToShader);
+        bool? MaterialMutable, bool ShaderParametersUnavailable, bool CopyToShader,
+        ShaderCopyBinding? CopyToShaderBinding);
 
     private readonly record struct PostShaderValue(string Id, bool HasShader, bool GetScreenTexture,
         bool RaiseShaderEvent, bool ShaderParametersUnavailable);

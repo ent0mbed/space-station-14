@@ -128,7 +128,8 @@ public sealed partial class CaptureRunner
             ? new NativeTileCapture(_entities, _resources, _tileDefinitions, _fingerprints.ContainsKey, _sourceClockOrigin)
             : null;
         _output = output;
-        Write(new { kind = "diagnostic-header", schema = "ss14-diagnostic/0.2", gameBuild = Program.GameBuild,
+        Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
             spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
@@ -138,7 +139,8 @@ public sealed partial class CaptureRunner
             scope = new { gameBuild = Program.GameBuild, forkId = Program.ForkId,
                 bundleSha256 = Program.ResourceBundleSha256, roundId, sourceStartTick = data.TickOffset.Value },
             dictionaryLimits = new { spriteDefinitions = Program.MaxSpriteDefinitions,
-                spriteDefinitionBytes = Program.MaxSpriteDefinitionBytes, resourceDefinitions = Program.MaxResourceDefinitions },
+                spriteDefinitionBytes = Program.MaxSpriteDefinitionBytes, resourceDefinitions = Program.MaxResourceDefinitions,
+                shaderParameterNameCharacters = Program.MaxShaderParameterNameCharacters },
             loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies()
                 .Where(assembly => !assembly.IsDynamic && assembly.GetName().Name is { } name
                     && (name.StartsWith("Content.", StringComparison.Ordinal)
@@ -268,7 +270,8 @@ public sealed partial class CaptureRunner
         output.Flush();
         var tileSummary = tileCapture?.Finish() ?? NativeTileCapture.DisabledSummary;
 
-        var summary = new { schema = "ss14-diagnostic-summary/0.2", gameBuild = Program.GameBuild,
+        var summary = new { schema = Program.SummarySchema,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
@@ -312,7 +315,7 @@ public sealed partial class CaptureRunner
         var id = metadata.NetEntity.Id;
         int? spriteId = null;
         if (_entities.TryGetComponent<SpriteComponent>(uid, out var component))
-            spriteId = CaptureSprite(id, component, initial);
+            spriteId = CaptureSprite(uid, id, component, initial);
         else
             _previousSprites.Remove(id);
         var record = new { id, parentId = transform.ParentUid == EntityUid.Invalid ? (int?) null
