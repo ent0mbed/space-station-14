@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Robust.Client.GameObjects;
+using Robust.Shared.Maths;
 
 namespace Content.Replay.Diagnostic;
 
@@ -49,7 +50,8 @@ public sealed partial class CaptureRunner
                 layer.CopyToShaderParameters != null,
                 CaptureShaderCopy((uid, component), layer.CopyToShaderParameters, nativeLayers.Count));
         }
-        var nativePosts = _entities.System<SpriteSystem>().GetPostShaders(component);
+        var spriteSystem = _entities.System<SpriteSystem>();
+        var nativePosts = spriteSystem.GetPostShaders(component);
         if (nativePosts.Count > _postScratch.Length)
             throw new InvalidDataException("Diagnostic post-shader budget exceeded.");
         for (var index = 0; index < nativePosts.Count; index++)
@@ -67,7 +69,7 @@ public sealed partial class CaptureRunner
             component.RenderOrder, ColorValue.From(component.Color), VectorValue.From(component.Scale),
             VectorValue.From(component.Offset), component.Rotation.Theta, component.NoRotation,
             component.SnapCardinals, component.EnableDirectionOverride, EnumName(component.DirectionOverride),
-            component.GranularLayersRendering);
+            component.GranularLayersRendering, BoundsValue.From(spriteSystem.GetLocalBounds((uid, component))));
         var layers = _layerScratch.AsSpan(0, nativeLayers.Count);
         var posts = _postScratch.AsSpan(0, nativePosts.Count);
 
@@ -102,6 +104,7 @@ public sealed partial class CaptureRunner
             head.Visible, head.ContainerOccluded, head.DrawDepth, head.RenderOrder,
             head.Color, head.Scale, head.Offset, head.Rotation, head.NoRotation, head.SnapCardinals,
             head.EnableDirectionOverride, head.DirectionOverride, head.GranularLayersRendering,
+            nativeLocalBounds = head.NativeLocalBounds.ToArray(),
             layers = ownedLayers, postShaders = ownedPosts }, Json);
         if (_spriteDefinitionBytes + bytes.Length > Program.MaxSpriteDefinitionBytes)
             throw new InvalidDataException("Diagnostic sprite-definition byte budget exceeded.");
@@ -145,7 +148,23 @@ public sealed partial class CaptureRunner
     private readonly record struct SpriteHead(bool Visible, bool ContainerOccluded, int DrawDepth,
         uint RenderOrder, ColorValue Color, VectorValue Scale, VectorValue Offset, double Rotation,
         bool NoRotation, bool SnapCardinals, bool EnableDirectionOverride, string DirectionOverride,
-        bool GranularLayersRendering);
+        bool GranularLayersRendering, BoundsValue NativeLocalBounds);
+
+    // Native CPU bounds include sprite scale and contributing layers, not sprite offset/rotation.
+    // They are not a guarantee about arbitrary shader expansion.
+    private readonly record struct BoundsValue(float Left, float Bottom, float Right, float Top)
+    {
+        public static BoundsValue From(Box2 bounds)
+        {
+            if (!float.IsFinite(bounds.Left) || !float.IsFinite(bounds.Bottom)
+                || !float.IsFinite(bounds.Right) || !float.IsFinite(bounds.Top)
+                || bounds.Left > bounds.Right || bounds.Bottom > bounds.Top)
+                throw new InvalidDataException("Native sprite local bounds are nonfinite or inverted.");
+            return new(bounds.Left, bounds.Bottom, bounds.Right, bounds.Top);
+        }
+
+        public float[] ToArray() => [Left, Bottom, Right, Top];
+    }
 
     private readonly record struct LayerValue(int Index, bool Visible, ColorValue Color, VectorValue Scale,
         VectorValue Offset, double Rotation, string? RsiPath, string? RsiState, string? TexturePath,

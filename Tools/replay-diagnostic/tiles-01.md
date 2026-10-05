@@ -1,7 +1,7 @@
 # Optional native tile diagnostic
 
 Pass `--tiles true` to the version-pinned diagnostic reader to write `tiles.jsonl`
-beside `scene.jsonl`. The scene uses `ss14-diagnostic/0.4`; no tile records are
+beside `scene.jsonl`. The scene uses `ss14-diagnostic/0.5`; no tile records are
 inserted into it. `summary.json.tiles.enabled`, `file`, `schema`, and `sceneSchema`
 explicitly identify the companion. When disabled, `enabled` is false and `file`
 is null. Consumers must use that capability declaration rather than discover
@@ -24,15 +24,17 @@ patch is required. The game and resource bundle remain pinned by the reader.
 ## Identity and records
 
 The first record has `kind: "tile-header"` and
-`schema: "ss14-diagnostic-tiles/0.1"`. It declares `sceneSchema`,
+`schema: "ss14-diagnostic-tiles/0.2"`. It declares `sceneSchema`,
 `capability: "grid-tiles"`, `gameBuild`, `engineVersion`, `frameCount`, `timeUnit`,
 `sourceClockOrigin100ns`, and `scope`. Scope contains the same `gameBuild`,
 `forkId`, `bundleSha256`, `roundId`, and `sourceStartTick` as the scene header.
 Reject mismatched companions. Integer times are in 100 ns units.
 
 `coordinateSpace` is `grid-local-tile-indices`. `exportChunkSize` is 16 and
-`pixelsPerMeter` is 32. These export chunks organize tile data independently
-of the engine's internal chunk storage. Chunk `(cx,cy)` begins at tile index
+`pixelsPerMeter` is 32. Tile 0.2 requires and validates matching native 16x16
+chunks and preserves their presence. See [viewport inputs](viewport-inputs-05.md)
+for the required capability and effective edge-setting provenance.
+Chunk `(cx,cy)` begins at tile index
 `(cx*16,cy*16)`. Floor division defines chunk indices for negative coordinates.
 
 `tile-definition` records precede their first use. Fields are:
@@ -50,8 +52,9 @@ of the engine's internal chunk storage. Chunk `(cx,cy)` begins at tile index
   builder; every edge PNG is 32x32. Higher `edgeSpritePriority` wins when both
   adjacent tiles provide an edge, following native rendering rules.
 
-Type 0 is the resolved empty/Space definition. Empty tiles are implicit and do
-not draw. The header's `errorTileImage` describes the native engine's built-in
+Type 0 is the resolved empty/Space definition. Empty cells draw no base tile,
+but may receive neighbor edge overlays inside a present native chunk.
+The header's `errorTileImage` describes the native engine's built-in
 `/Textures/noTile.png`, whose body is outside the verified game bundle. It is
 unused in the bounded fixture. Nonempty tiles without a sprite are rejected
 rather than introduce that additional engine-resource dependency. Definition
@@ -80,8 +83,9 @@ Each chunk is `{gridId,x,y,action,tiles}`:
 
 - `replace`: discard previous chunk contents and insert the listed nonempty
   tiles; absent coordinates become empty. Initial chunks and new grid chunks
-  use this action, as do changed chunks in later frames.
-- `remove`: discard the whole chunk; `tiles` is empty.
+  use this action, as do changed chunks in later frames. An empty `tiles` array
+  preserves a present empty native chunk; omitted cells may receive edge overlays.
+- `remove`: discard the whole chunk because it is absent natively; `tiles` is empty.
 
 Each tile tuple is `[localX,localY,typeId,flags,variant,rotationMirroring]`.
 Local indices are 0..15. Preserve all four native tile fields. Raw
@@ -107,9 +111,9 @@ The runner's native texture/move/deletion hooks are released in a finally block,
 then StopReplay unloads the replay. These caches are capture-scoped; this change
 does not retain a mutable native world or prototype registry across rounds.
 
-After every frame the projected nonempty count must equal the native count on
-each grid. At the end, one full enumeration compares every surviving native
-tile's coordinates and all four values against the projected cache. The summary
+After every frame projected chunk presence and the nonempty count must equal
+the native values on each grid. At the end, one full enumeration compares every
+cell in every surviving native chunk, including empty cells, against the projected cache. The summary
 records counts, observed creation/deletion and chunk changes, validated resource
 count, native final tiles checked, stage time, and additional output bytes.
 

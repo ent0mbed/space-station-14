@@ -8,10 +8,11 @@ audio, resource, or tile record semantics. Older strict readers, including
 `expand-02.py`, reject 0.3. Consumers must reject unsupported scene versions and
 required capabilities; dropping this binding produces an incorrect sprite.
 
-The current reader emits 0.4 with the same binding and an additional required
+Version 0.4 uses the same binding and an additional required
 [native audio timing/metadata capability](audio-timing-04.md). This note describes
 the 0.3 introduction; accepting the copy capability alone does not authorize
-ignoring 0.4 audio fields.
+ignoring 0.4 audio fields. The current reader emits 0.5 with unchanged bindings;
+see [viewport inputs](viewport-inputs-05.md) for its additional bounds capability.
 
 Every layer retains `copyToShader` and adds `copyToShaderBinding`. The binding
 is null exactly when `copyToShader` is false. Otherwise it is:

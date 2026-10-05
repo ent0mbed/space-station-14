@@ -1,12 +1,15 @@
 # Native audio pause timing and cached stream metadata
 
-The scene and success summary use `ss14-diagnostic/0.4` and
-`ss14-diagnostic-summary/0.4`. Both require
+Audio timing was introduced in `ss14-diagnostic/0.4` and
+`ss14-diagnostic-summary/0.4`, requiring
 `["native-shader-copy-bindings/1", "native-audio-timing-metadata/1"]`.
 The 0.3 shader-copy binding is unchanged. Strict older readers must reject 0.4;
 consumers must preserve these fields and reject unsupported required capabilities
 before claiming support. Tile companion schema remains 0.1 and its `sceneSchema`
-matches 0.4. These additions are diagnostic fields, not a finalized wire format.
+matches 0.4 for that version. The current reader emits 0.5 with unchanged audio
+values, an additional bounds capability and tile companion 0.2; see
+[viewport inputs](viewport-inputs-05.md). These additions are diagnostic fields,
+not a finalized wire format.
 
 Each initial/start/change audio value adds `pauseTime100ns`. It is the exact nullable
 `AudioComponent.PauseTime?.Ticks`: a signed 64-bit absolute native-clock timestamp
