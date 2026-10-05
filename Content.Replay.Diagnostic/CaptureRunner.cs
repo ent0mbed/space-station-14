@@ -100,6 +100,7 @@ public sealed partial class CaptureRunner
         var resourceIndexMs = resourceTimer.Elapsed.TotalMilliseconds;
 
         using var output = File.Create(Path.Combine(Program.Output, "scene.jsonl"));
+        using var tileOutput = Program.CaptureTiles ? File.Create(Path.Combine(Program.Output, "tiles.jsonl")) : null;
         _output = output;
         Write(new { kind = "diagnostic-header", schema = "ss14-diagnostic/0.2", gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
@@ -120,6 +121,8 @@ public sealed partial class CaptureRunner
                 .Select(assembly => new { name = assembly.GetName().Name,
                     version = assembly.GetName().Version?.ToString(),
                     moduleVersionId = assembly.ManifestModule.ModuleVersionId }).ToArray() });
+        if (tileOutput != null)
+            StartTiles(tileOutput, data.Count, data.TickOffset.Value, roundId);
 
         var simulation = Stopwatch.StartNew();
         var loopAllocatedStart = GC.GetTotalAllocatedBytes(precise: true);
@@ -209,6 +212,7 @@ public sealed partial class CaptureRunner
                     sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
                     upserts = index == 0 ? upserts.Skip(chunk * 1000).Take(1000) : upserts,
                     deletes, audioEvents = chunk == 0 ? audioEvents : [] });
+            CaptureTiles(index, state.ToSequence.Value, data.ReplayTime[index].Ticks);
         }
         simulation.Stop();
         var loopAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - loopAllocatedStart;
@@ -237,6 +241,7 @@ public sealed partial class CaptureRunner
         WriteResourceDefinitions();
         Write(inventory);
         output.Flush();
+        var tileSummary = FinishTiles();
 
         var summary = new { schema = "ss14-diagnostic-summary/0.2", gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
@@ -262,6 +267,7 @@ public sealed partial class CaptureRunner
                 clientAncestors = _clientAncestors, movedCandidates = _movedCandidates,
                 observedNativeDeletions = _observedDeletions, maximumDepth = _maxParentDepth,
                 firstTransitionAncestors = _firstTransitionAncestors },
+            tiles = tileSummary,
             allocationsBytes = new { startup = startupAllocatedBytes,
                 loadAndCheckpoint = loadedAllocatedBytes - Program.AllocatedAtStart - startupAllocatedBytes,
                 entityInitialization = initializedAllocatedBytes - loadedAllocatedBytes,
