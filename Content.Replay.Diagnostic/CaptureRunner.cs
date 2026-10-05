@@ -129,7 +129,7 @@ public sealed partial class CaptureRunner
             : null;
         _output = output;
         Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
             spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
@@ -271,13 +271,14 @@ public sealed partial class CaptureRunner
         var tileSummary = tileCapture?.Finish() ?? NativeTileCapture.DisabledSummary;
 
         var summary = new { schema = Program.SummarySchema,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
             initialEntities = _initialEntities, entitiesAtEnd = _fingerprints.Count, initialSprites = _sprites, initialLayers = _layers,
             shaderLayers = _shaderLayers, totalUpserts = _upserts, audio = new { initial = _initialAudio,
                 starts = _audioStarts, changes = _audioChanges, removals = _audioRemovals,
+                soundMetadata = new { available = _soundMetadataAvailable, unavailable = _soundMetadataUnavailable },
                 nativeStateTypes = _audioStateTypes, messageTypes = _messageTypes },
             stagesMilliseconds = new { startup = startupMs, resourceVerification = Program.ResourceVerificationMilliseconds,
                 loadAndCheckpoint = loadMs, zipZstdNativeRead = native.ReadMilliseconds,
@@ -336,9 +337,10 @@ public sealed partial class CaptureRunner
         {
             var audioState = audio.State;
             _soundPaths.Add(audio.FileName);
-            var resourceId = EnsureResource("sound", audio.FileName, BodyMetadata);
+            var resourceId = EnsureSoundResource(audio.FileName);
             var value = new { id, audio.FileName, startTime100ns = audio.AudioStart.Ticks,
-                startReplayTime100ns = checked(audio.AudioStart.Ticks - _sourceClockOrigin), resourceId,
+                startReplayTime100ns = checked(audio.AudioStart.Ticks - _sourceClockOrigin),
+                pauseTime100ns = audio.PauseTime?.Ticks, resourceId,
                 state = EnumName(audioState), audio.Global, flags = (byte) audio.Flags,
                 parameters = new { volumeDb = float.IsFinite(audio.Params.Volume) ? (float?) audio.Params.Volume : null,
                     muted = float.IsNegativeInfinity(audio.Params.Volume), audio.Params.Pitch, audio.Params.Loop,
