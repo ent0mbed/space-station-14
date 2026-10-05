@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Text.Json;
 using Robust.Client.GameObjects;
 using Robust.Client.ResourceManagement;
+using Robust.Shared;
+using Robust.Shared.Configuration;
 using Robust.Shared.Map;
 using Robust.Shared.Map.Components;
 using Robust.Shared.Maths;
@@ -12,7 +14,7 @@ namespace Content.Replay.Diagnostic;
 /// <summary>One replay clip's tile projection, resources, subscription, and companion output.</summary>
 public sealed class NativeTileCapture : IDisposable
 {
-    public const string Schema = "ss14-diagnostic-tiles/0.1";
+    public const string Schema = "ss14-diagnostic-tiles/0.2";
     private const int ExportChunkSize = 16;
     private const int TilePixels = 32;
     private const int MaxTileGrids = 4096;
@@ -25,6 +27,7 @@ public sealed class NativeTileCapture : IDisposable
     private readonly IClientEntityManager _entities;
     private readonly IResourceCache _resources;
     private readonly ITileDefinitionManager _tileDefinitions;
+    private readonly IConfigurationManager _configuration;
     private readonly Func<int, bool> _sceneContains;
     private readonly long _sourceClockOrigin;
     private readonly SharedMapSystem _tileMap;
@@ -33,6 +36,7 @@ public sealed class NativeTileCapture : IDisposable
     private bool _subscribed;
     private bool _finished;
     private bool _disposed;
+    private bool _renderTileEdges;
     private readonly Dictionary<int, TileGrid> _tileGrids = new();
     private readonly HashSet<int> _tileDefinitionIds = new();
     private readonly Dictionary<string, TileImage> _tileImages = new(StringComparer.Ordinal);
@@ -45,6 +49,7 @@ public sealed class NativeTileCapture : IDisposable
     private int _initialTileGrids;
     private int _initialTileCount;
     private int _initialTileChunks;
+    private int _initialEmptyChunks;
     private int _tileGridCreations;
     private int _tileGridDeletions;
     private int _tileDeltaReplacements;
@@ -65,11 +70,13 @@ public sealed class NativeTileCapture : IDisposable
     private sealed record TileChunkRecord(int GridId, int X, int Y, string Action, List<int[]> Tiles);
 
     public NativeTileCapture(IClientEntityManager entities, IResourceCache resources,
-        ITileDefinitionManager definitions, Func<int, bool> sceneContains, long sourceClockOrigin)
+        ITileDefinitionManager definitions, IConfigurationManager configuration,
+        Func<int, bool> sceneContains, long sourceClockOrigin)
     {
         _entities = entities;
         _resources = resources;
         _tileDefinitions = definitions;
+        _configuration = configuration;
         _sceneContains = sceneContains;
         _sourceClockOrigin = sourceClockOrigin;
         _tileMap = _entities.System<SharedMapSystem>();
@@ -83,10 +90,13 @@ public sealed class NativeTileCapture : IDisposable
         if (_disposed || _tileOutput != null)
             throw new InvalidOperationException("Tile capture cannot be started twice or after disposal.");
         _tileOutput = File.Create(Path.Combine(outputDirectory, "tiles.jsonl"));
+        _renderTileEdges = _configuration.GetCVar(CVars.RenderTileEdges);
         _tileObserver.TileChanged += OnNativeTileChanged;
         _subscribed = true;
         WriteTiles(new { kind = "tile-header", schema = Schema, sceneSchema = Program.SceneSchema,
             capability = "grid-tiles", finalizedTransport = false, frameCount, timeUnit = "100ns",
+            requiredCapabilities = new[] { Program.TileEdgeCapability },
+            renderTileEdges = _renderTileEdges, renderTileEdgesSource = "converter-client-cvar:render.tile_edges",
             sourceClockOrigin100ns = _sourceClockOrigin, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion,
             scope = new { gameBuild = Program.GameBuild, forkId = Program.ForkId,
@@ -124,6 +134,7 @@ public sealed class NativeTileCapture : IDisposable
     public void Capture(int sequence, uint sourceTick, long sourceTime100ns)
     {
         RequireActive();
+        CheckEdgeSetting();
         var start = Stopwatch.GetTimestamp();
         if (_tileDirtyOverflow)
             throw new InvalidDataException("Diagnostic dirty tile-chunk budget exceeded.");
@@ -151,6 +162,7 @@ public sealed class NativeTileCapture : IDisposable
         foreach (var (uid, native, id) in ordered)
         {
             _activeTileGrids.Add(id);
+            CheckChunkLayout(native, id);
             if (native.TileSize == 0)
                 throw new InvalidDataException("Native tile size is zero.");
             if (!_tileGrids.TryGetValue(id, out var projected))
@@ -158,7 +170,7 @@ public sealed class NativeTileCapture : IDisposable
                 _tileGrids[id] = projected = new(native.TileSize);
                 grids.Add(new { id, tileSize = native.TileSize });
                 if (sequence > 0) _tileGridCreations++;
-                foreach (var tile in _tileMap.GetAllTiles(uid, native))
+                foreach (var tile in _tileMap.GetAllTiles(uid, native, ignoreEmpty: false))
                 {
                     var key = ExportChunk(tile.GridIndices);
                     if (!projected.Chunks.TryGetValue(key, out var data))
@@ -168,6 +180,7 @@ public sealed class NativeTileCapture : IDisposable
                         projected.Chunks[key] = data = new Tile[ExportChunkSize * ExportChunkSize];
                     }
                     data[TileIndex(tile.GridIndices, key)] = tile.Tile;
+                    if (tile.Tile.IsEmpty) continue;
                     projected.FilledTiles++;
                     if (++_tileCount > MaxNonemptyTiles)
                         throw new InvalidDataException("Diagnostic nonempty tile budget exceeded.");
@@ -185,10 +198,9 @@ public sealed class NativeTileCapture : IDisposable
                     projected.TileSize = native.TileSize;
                     grids.Add(new { id, tileSize = native.TileSize });
                 }
-                foreach (var change in _dirtyTileChunks.Where(change => change.Grid == uid)
-                             .OrderBy(change => change.Chunk.X).ThenBy(change => change.Chunk.Y))
+                foreach (var key in ChangedChunks(uid, native, projected))
                 {
-                    var key = change.Chunk;
+                    var present = _tileMap.HasChunk(uid, native, key);
                     var next = new Tile[ExportChunkSize * ExportChunkSize];
                     var filled = 0;
                     for (var x = 0; x < ExportChunkSize; x++)
@@ -200,14 +212,14 @@ public sealed class NativeTileCapture : IDisposable
                         if (!tile.IsEmpty) filled++;
                     }
                     projected.Chunks.TryGetValue(key, out var previous);
-                    if (previous != null && previous.AsSpan().SequenceEqual(next)) continue;
-                    if (previous == null && filled == 0) continue;
+                    if (previous != null && present && previous.AsSpan().SequenceEqual(next)) continue;
+                    if (previous == null && !present) continue;
                     var previousFilled = previous?.Count(tile => !tile.IsEmpty) ?? 0;
                     projected.FilledTiles += filled - previousFilled;
                     _tileCount += filled - previousFilled;
                     if (_tileCount > MaxNonemptyTiles)
                         throw new InvalidDataException("Diagnostic nonempty tile budget exceeded.");
-                    if (filled == 0)
+                    if (!present)
                     {
                         projected.Chunks.Remove(key);
                         _tileChunkCount--;
@@ -226,6 +238,9 @@ public sealed class NativeTileCapture : IDisposable
             }
             if (projected.FilledTiles != _tileMap.GetFilledTileCount((uid, native)))
                 throw new InvalidDataException($"Native/projected tile count differs on grid {id}.");
+            CheckChunkPresence(uid, native, projected, id);
+            if (chunks.Count > MaxTileChunks)
+                throw new InvalidDataException("Diagnostic changed tile-chunk budget exceeded.");
         }
         foreach (var id in _tileGrids.Keys.Where(id => !_activeTileGrids.Contains(id)).Order().ToArray())
         {
@@ -242,6 +257,7 @@ public sealed class NativeTileCapture : IDisposable
             _initialTileGrids = _tileGrids.Count;
             _initialTileCount = _tileCount;
             _initialTileChunks = _tileChunkCount;
+            _initialEmptyChunks = EmptyChunkCount();
         }
         var chunkCount = Math.Max(1, (chunks.Count + 63) / 64);
         for (var chunk = 0; chunk < chunkCount; chunk++)
@@ -253,6 +269,57 @@ public sealed class NativeTileCapture : IDisposable
         _tileFrames++;
         _tileCaptureMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
     }
+
+    private void CheckEdgeSetting()
+    {
+        if (_configuration.GetCVar(CVars.RenderTileEdges) != _renderTileEdges)
+            throw new InvalidDataException("Native tile-edge setting changed during the diagnostic clip.");
+    }
+
+    private void CheckChunkLayout(MapGridComponent grid, int id)
+    {
+        // Public conversion APIs prove the native size is exactly 16, without internal fields/reflection.
+        if (_tileMap.GridTileToChunkIndices(grid, new Vector2i(ExportChunkSize - 1, ExportChunkSize - 1)) != Vector2i.Zero
+            || _tileMap.GridTileToChunkIndices(grid, new Vector2i(ExportChunkSize, ExportChunkSize)) != Vector2i.One)
+            throw new InvalidDataException($"Native tile grid {id} does not use the required 16x16 chunk layout.");
+        if (grid.ChunkCount > MaxTileChunks)
+            throw new InvalidDataException("Diagnostic native tile-chunk budget exceeded.");
+    }
+
+    private IEnumerable<Vector2i> ChangedChunks(EntityUid uid, MapGridComponent native, TileGrid projected)
+    {
+        var changed = _dirtyTileChunks.Where(change => change.Grid == uid).Select(change => change.Chunk).ToHashSet();
+        var knownNativeChunks = 0;
+        foreach (var key in projected.Chunks.Keys)
+        {
+            if (_tileMap.HasChunk(uid, native, key)) knownNativeChunks++;
+            else changed.Add(key); // Empty-chunk removal need not raise a changed-tile event.
+        }
+        foreach (var key in changed)
+            if (!projected.Chunks.ContainsKey(key) && _tileMap.HasChunk(uid, native, key)) knownNativeChunks++;
+        if (knownNativeChunks != native.ChunkCount)
+        {
+            // Presence changes without changed tiles include retained empty native chunks.
+            // Scan only when the native chunk count cannot be explained by the observed changes.
+            foreach (var tile in _tileMap.GetAllTiles(uid, native, ignoreEmpty: false))
+            {
+                var key = ExportChunk(tile.GridIndices);
+                if (!projected.Chunks.ContainsKey(key)) changed.Add(key);
+            }
+        }
+        if (changed.Count > MaxTileChunks)
+            throw new InvalidDataException("Diagnostic changed tile-chunk budget exceeded.");
+        return changed.OrderBy(key => key.X).ThenBy(key => key.Y);
+    }
+
+    private void CheckChunkPresence(EntityUid uid, MapGridComponent native, TileGrid projected, int id)
+    {
+        if (native.ChunkCount != projected.Chunks.Count
+            || projected.Chunks.Keys.Any(key => !_tileMap.HasChunk(uid, native, key)))
+            throw new InvalidDataException($"Native/projected chunk presence differs on grid {id}.");
+    }
+
+    private int EmptyChunkCount() => _tileGrids.Values.Sum(grid => grid.Chunks.Values.Count(data => data.All(tile => tile.IsEmpty)));
 
     private TileChunkRecord ChunkRecord(int gridId, Vector2i chunk, Tile[] data)
     {
@@ -326,8 +393,10 @@ public sealed class NativeTileCapture : IDisposable
     public object Finish()
     {
         RequireActive();
+        CheckEdgeSetting();
         var start = Stopwatch.GetTimestamp();
         var checkedTiles = 0;
+        var checkedChunks = 0;
         var variants = new HashSet<byte>();
         var rotated = 0;
         var flagged = 0;
@@ -337,11 +406,15 @@ public sealed class NativeTileCapture : IDisposable
                 || !_entities.TryGetComponent<MapGridComponent>(uid, out var grid))
                 throw new InvalidDataException($"Final native tile grid {id} is unavailable.");
             var count = 0;
-            foreach (var tile in _tileMap.GetAllTiles(uid.Value, grid))
+            CheckChunkLayout(grid, id);
+            CheckChunkPresence(uid.Value, grid, projected, id);
+            checkedChunks += grid.ChunkCount;
+            foreach (var tile in _tileMap.GetAllTiles(uid.Value, grid, ignoreEmpty: false))
             {
                 var key = ExportChunk(tile.GridIndices);
                 if (!projected.Chunks.TryGetValue(key, out var data) || data[TileIndex(tile.GridIndices, key)] != tile.Tile)
                     throw new InvalidDataException($"Final native tile differs from projected grid {id}.");
+                if (tile.Tile.IsEmpty) continue;
                 count++;
                 variants.Add(tile.Tile.Variant);
                 if (tile.Tile.RotationMirroring != 0) rotated++;
@@ -358,13 +431,17 @@ public sealed class NativeTileCapture : IDisposable
         Unsubscribe();
         _finished = true;
         return new { enabled = true, schema = Schema, file = "tiles.jsonl", sceneSchema = Program.SceneSchema,
+            requiredCapabilities = new[] { Program.TileEdgeCapability },
+            renderTileEdges = _renderTileEdges, renderTileEdgesSource = "converter-client-cvar:render.tile_edges",
             frames = _tileFrames, initialGrids = _initialTileGrids, finalGrids = _tileGrids.Count,
             initialNonemptyTiles = _initialTileCount, finalNonemptyTiles = _tileCount,
             initialChunks = _initialTileChunks, finalChunks = _tileChunkCount,
+            initialEmptyChunks = _initialEmptyChunks, finalEmptyChunks = EmptyChunkCount(),
             gridCreations = _tileGridCreations, gridDeletions = _tileGridDeletions,
             deltaChunkReplacements = _tileDeltaReplacements, chunkRemovals = _tileChunkRemovals,
             nativeTileChangeEntries = _nativeTileChanges, definitions = _tileDefinitionIds.Count, imageResources = _tileImages.Count,
-            nativeFinalTilesChecked = checkedTiles, variantValues = variants.Select(value => (int) value).Order().ToArray(),
+            nativeFinalTilesChecked = checkedTiles, nativeFinalChunksChecked = checkedChunks,
+            variantValues = variants.Select(value => (int) value).Order().ToArray(),
             finalRotatedOrMirroredTiles = rotated, finalFlaggedTiles = flagged,
             captureMilliseconds = _tileCaptureMs, outputMilliseconds = _tileOutputMs,
             finalValidationMilliseconds = _tileValidationMs, outputBytes = _tileOutput.Length };

@@ -11,10 +11,12 @@ internal static class Program
 {
     public const string GameBuild = "94087a918a2fae4571f5a529fe14ef7f5dce29a3";
     public const string EngineVersion = "289.0.3";
-    public const string SceneSchema = "ss14-diagnostic/0.4";
-    public const string SummarySchema = "ss14-diagnostic-summary/0.4";
+    public const string SceneSchema = "ss14-diagnostic/0.5";
+    public const string SummarySchema = "ss14-diagnostic-summary/0.5";
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
     public const string AudioTimingCapability = "native-audio-timing-metadata/1";
+    public const string SpriteBoundsCapability = "native-sprite-local-bounds/1";
+    public const string TileEdgeCapability = "native-tile-edge-inputs/1";
     public const int MaxShaderParameterNameCharacters = 256;
     public static readonly Stopwatch Total = Stopwatch.StartNew();
     public static string Input = "";

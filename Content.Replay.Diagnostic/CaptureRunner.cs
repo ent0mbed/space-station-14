@@ -125,11 +125,11 @@ public sealed partial class CaptureRunner
         File.Delete(Path.Combine(Program.Output, "summary.json"));
         using var output = File.Create(Path.Combine(Program.Output, "scene.jsonl"));
         using var tileCapture = Program.CaptureTiles
-            ? new NativeTileCapture(_entities, _resources, _tileDefinitions, _fingerprints.ContainsKey, _sourceClockOrigin)
+            ? new NativeTileCapture(_entities, _resources, _tileDefinitions, _configuration, _fingerprints.ContainsKey, _sourceClockOrigin)
             : null;
         _output = output;
         Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
             spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
@@ -271,7 +271,7 @@ public sealed partial class CaptureRunner
         var tileSummary = tileCapture?.Finish() ?? NativeTileCapture.DisabledSummary;
 
         var summary = new { schema = Program.SummarySchema,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
