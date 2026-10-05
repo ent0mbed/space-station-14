@@ -7,6 +7,15 @@ explicitly identify the companion. When disabled, `enabled` is false and `file`
 is null. Consumers must use that capability declaration rather than discover
 possibly older files in a reused output directory.
 
+A successful process exit and complete streams are required in addition to the
+capability declaration. Require every scene/tile frame and all of its chunk
+indices through the declared frame count, matching identity/clock, and the
+scene's final `resources` inventory. Capability metadata alone is not proof of
+completion. Before truncating either diagnostic stream, the reader removes any
+previous `summary.json`; a new summary is published only after scene output and
+tile Finish succeed. Failed runs can leave partial diagnostic streams, which
+must be rejected.
+
 This is a bounded diagnostic for the existing ten-second clip, not a finalized
 transport. It uses existing public APIs in RobustToolbox
 `36905986f6809420dbc78168fc494f91723d356b` / engine 289.0.3. No additional engine

@@ -117,6 +117,8 @@ public sealed partial class CaptureRunner
             _texturePaths.TryAdd(texture.Texture, path.ToString());
         var resourceIndexMs = resourceTimer.Elapsed.TotalMilliseconds;
 
+        // A failed overwrite must not retain the previous run's success/capability metadata.
+        File.Delete(Path.Combine(Program.Output, "summary.json"));
         using var output = File.Create(Path.Combine(Program.Output, "scene.jsonl"));
         using var tileCapture = Program.CaptureTiles
             ? new NativeTileCapture(_entities, _resources, _tileDefinitions, _fingerprints.ContainsKey, _sourceClockOrigin)
