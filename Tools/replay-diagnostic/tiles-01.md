@@ -1,7 +1,7 @@
 # Optional native tile diagnostic
 
 Pass `--tiles true` to the version-pinned diagnostic reader to write `tiles.jsonl`
-beside `scene.jsonl`. The scene uses `ss14-diagnostic/0.3`; no tile records are
+beside `scene.jsonl`. The scene uses `ss14-diagnostic/0.4`; no tile records are
 inserted into it. `summary.json.tiles.enabled`, `file`, `schema`, and `sceneSchema`
 explicitly identify the companion. When disabled, `enabled` is false and `file`
 is null. Consumers must use that capability declaration rather than discover
