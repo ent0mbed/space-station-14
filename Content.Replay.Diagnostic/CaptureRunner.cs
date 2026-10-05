@@ -56,26 +56,29 @@ public sealed partial class CaptureRunner
     private int _audioRemovals;
     private long _sourceClockOrigin;
     private long _projectionAllocatedBytes;
+    private SharedTransformSystem? _captureTransformSystem;
 
     public async Task RunAsync()
     {
-        var transformSystem = _entities.System<SharedTransformSystem>();
+        _captureTransformSystem = null;
         _resources.OnRawTextureLoaded += OnTexture;
         try
         {
-            await CaptureAsync(transformSystem);
+            await CaptureAsync();
         }
         finally
         {
             _resources.OnRawTextureLoaded -= OnTexture;
-            transformSystem.OnGlobalMoveEvent -= OnNativeMove;
+            if (_captureTransformSystem is { } transformSystem)
+                transformSystem.OnGlobalMoveEvent -= OnNativeMove;
+            _captureTransformSystem = null;
             _entities.EntityDeleted -= OnNativeDelete;
             if (_playback.Replay != null)
                 _playback.StopReplay();
         }
     }
 
-    private async Task CaptureAsync(SharedTransformSystem transformSystem)
+    private async Task CaptureAsync()
     {
         var startupMs = Program.Total.Elapsed.TotalMilliseconds;
         var startupAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - Program.AllocatedAtStart;
@@ -100,7 +103,8 @@ public sealed partial class CaptureRunner
         var startTimer = Stopwatch.StartNew();
         await _loader.StartReplayAsync(data, (_, _, _, _) => Task.CompletedTask);
         var initializeMs = startTimer.Elapsed.TotalMilliseconds;
-        transformSystem.OnGlobalMoveEvent += OnNativeMove;
+        _captureTransformSystem = _entities.System<SharedTransformSystem>();
+        _captureTransformSystem.OnGlobalMoveEvent += OnNativeMove;
         _entities.EntityDeleted += OnNativeDelete;
         var initializedAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true);
         var checkpoint = data.Checkpoints[0];
