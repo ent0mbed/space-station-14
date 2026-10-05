@@ -52,10 +52,13 @@ public sealed partial class CaptureRunner
     private int _audioStarts;
     private int _audioChanges;
     private int _audioRemovals;
+    private long _sourceClockOrigin;
+    private long _projectionAllocatedBytes;
 
     public async Task RunAsync()
     {
         var startupMs = Program.Total.Elapsed.TotalMilliseconds;
+        var startupAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - Program.AllocatedAtStart;
         _resources.OnRawTextureLoaded += OnTexture;
         _configuration.SetCVar(CVars.ReplayIgnoreErrors, false);
         _configuration.SetCVar(CVars.ReplayLoadedBlockWindow, 2);
@@ -67,14 +70,26 @@ public sealed partial class CaptureRunner
         var headerMetadata = _loader.LoadYamlMetadata(reader)!;
         var componentHash = ((Robust.Shared.Serialization.Markdown.Value.ValueDataNode)
             headerMetadata[ReplayConstants.MetaKeyComponentHash]).Value;
+        int? roundId = headerMetadata.TryGet("roundId", out Robust.Shared.Serialization.Markdown.Value.ValueDataNode? round)
+            && int.TryParse(round.Value, out var recordedRound) ? recordedRound : null;
         if (!Convert.ToHexString(_factory.GetHash(true)).Equals(componentHash, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Matching reader network component hash mismatch.");
         var data = await ((ReplayLoadManager) _loader).LoadReplayClipAsync(reader,
             (_, _, _, _) => Task.CompletedTask, TimeSpan.FromSeconds(Program.Seconds), native);
         var loadMs = loadTimer.Elapsed.TotalMilliseconds;
+        var loadedAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true);
         var startTimer = Stopwatch.StartNew();
         await _loader.StartReplayAsync(data, (_, _, _, _) => Task.CompletedTask);
         var initializeMs = startTimer.Elapsed.TotalMilliseconds;
+        var initializedAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true);
+        var checkpoint = data.Checkpoints[0];
+        var sourceTickRate = (int) checkpoint.Cvars[CVars.NetTickrate.Name];
+        if (sourceTickRate <= 0)
+            throw new InvalidDataException("Invalid recorded clock tick rate.");
+        // The same recorded checkpoint timebase and integer tick period used by native GetTime().
+        _sourceClockOrigin = checked(checkpoint.TimeBase.Item1.Ticks
+            + ((long) checkpoint.Tick.Value - checkpoint.TimeBase.Item2.Value)
+            * (TimeSpan.TicksPerSecond / sourceTickRate));
 
         var resourceTimer = Stopwatch.StartNew();
         foreach (var (path, texture) in _resources.GetAllResources<TextureResource>())
@@ -83,9 +98,17 @@ public sealed partial class CaptureRunner
 
         using var output = File.Create(Path.Combine(Program.Output, "scene.jsonl"));
         _output = output;
-        Write(new { kind = "diagnostic-header", schema = "ss14-diagnostic/0.1", gameBuild = Program.GameBuild,
+        Write(new { kind = "diagnostic-header", schema = "ss14-diagnostic/0.2", gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
+            spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
+            sourceClock = new { timeBaseTime100ns = checkpoint.TimeBase.Item1.Ticks,
+                timeBaseTick = checkpoint.TimeBase.Item2.Value, tickRate = sourceTickRate,
+                tickPeriod100ns = TimeSpan.TicksPerSecond / sourceTickRate },
+            scope = new { gameBuild = Program.GameBuild, forkId = Program.ForkId,
+                bundleSha256 = Program.ResourceBundleSha256, roundId, sourceStartTick = data.TickOffset.Value },
+            dictionaryLimits = new { spriteDefinitions = Program.MaxSpriteDefinitions,
+                spriteDefinitionBytes = Program.MaxSpriteDefinitionBytes, resourceDefinitions = Program.MaxResourceDefinitions },
             loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies()
                 .Where(assembly => !assembly.IsDynamic && assembly.GetName().Name is { } name
                     && (name.StartsWith("Content.", StringComparison.Ordinal)
@@ -96,6 +119,8 @@ public sealed partial class CaptureRunner
                     moduleVersionId = assembly.ManifestModule.ModuleVersionId }).ToArray() });
 
         var simulation = Stopwatch.StartNew();
+        var loopAllocatedStart = GC.GetTotalAllocatedBytes(precise: true);
+        var loopCollectionsStart = new[] { GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2) };
         double applyMs = 0;
         for (var index = 0; index < data.Count; index++)
         {
@@ -129,20 +154,25 @@ public sealed partial class CaptureRunner
             applyMs += Stopwatch.GetElapsedTime(stepStart).TotalMilliseconds;
 
             var projectionStart = Stopwatch.GetTimestamp();
+            var projectionAllocatedStart = GC.GetTotalAllocatedBytes(precise: false);
             List<object> upserts = new();
             List<int> deletes = new();
             List<object> audioEvents = new();
             if (index == 0)
             {
+                var ordered = new List<(EntityUid Uid, TransformComponent Transform, MetaDataComponent Metadata)>();
                 var query = _entities.EntityQueryEnumerator<TransformComponent, MetaDataComponent>();
                 while (query.MoveNext(out var uid, out var transform, out var metadata))
                 {
                     if (metadata.NetEntity.IsClientSide())
                         continue;
-                    if (_fingerprints.Count >= 250_000)
+                    if (ordered.Count >= 250_000)
                         throw new InvalidDataException("Diagnostic entity budget exceeded.");
-                    Capture(uid, transform, metadata, upserts, audioEvents, true);
+                    ordered.Add((uid, transform, metadata));
                 }
+                ordered.Sort((a, b) => a.Metadata.NetEntity.Id.CompareTo(b.Metadata.NetEntity.Id));
+                foreach (var entity in ordered)
+                    Capture(entity.Uid, entity.Transform, entity.Metadata, upserts, audioEvents, true);
                 _initialEntities = upserts.Count;
             }
             else
@@ -161,6 +191,7 @@ public sealed partial class CaptureRunner
                 {
                     if (_fingerprints.Remove(deleted.Id))
                         deletes.Add(deleted.Id);
+                    _previousSprites.Remove(deleted.Id);
                     if (_audio.Remove(deleted.Id))
                     {
                         _audioRemovals++;
@@ -169,17 +200,23 @@ public sealed partial class CaptureRunner
                 }
             }
             _projectionMs += Stopwatch.GetElapsedTime(projectionStart).TotalMilliseconds;
+            _projectionAllocatedBytes += GC.GetTotalAllocatedBytes(precise: false) - projectionAllocatedStart;
             _upserts += upserts.Count;
+            WriteResourceDefinitions();
+            WriteSpriteDefinitions();
             // The initial native world is large. Keep JSONL records bounded without dropping entities.
             var chunkCount = index == 0 ? (upserts.Count + 999) / 1000 : 1;
             for (var chunk = 0; chunk < chunkCount; chunk++)
                 Write(new { kind = index == 0 ? "snapshot" : "delta", sequence = index,
                     chunkIndex = chunk, chunkCount,
                     sourceTick = state.ToSequence.Value, sourceTime100ns = data.ReplayTime[index].Ticks,
+                    sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
                     upserts = index == 0 ? upserts.Skip(chunk * 1000).Take(1000) : upserts,
                     deletes, audioEvents = chunk == 0 ? audioEvents : [] });
         }
         simulation.Stop();
+        var loopAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - loopAllocatedStart;
+        var loopCollections = Enumerable.Range(0, 3).Select(gen => GC.CollectionCount(gen) - loopCollectionsStart[gen]).ToArray();
 
         var inventoryStart = Stopwatch.GetTimestamp();
         var rsi = _resources.GetAllResources<RSIResource>()
@@ -199,10 +236,13 @@ public sealed partial class CaptureRunner
                 "complete-client-only-sprite-dirty-tracking", "image-bodies-and-atlas-crops",
                 "client-recording-audio-message-payloads" } };
         var inventoryMs = Stopwatch.GetElapsedTime(inventoryStart).TotalMilliseconds;
+        foreach (var image in inventory.images)
+            EnsureResource("image", image, BodyMetadata);
+        WriteResourceDefinitions();
         Write(inventory);
         output.Flush();
 
-        var summary = new { schema = "ss14-diagnostic-summary/0.1", gameBuild = Program.GameBuild,
+        var summary = new { schema = "ss14-diagnostic-summary/0.2", gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
@@ -218,6 +258,17 @@ public sealed partial class CaptureRunner
                 resourceInventory = inventoryMs, output = _outputMs, clipLoop = simulation.Elapsed.TotalMilliseconds,
                 total = Program.Total.Elapsed.TotalMilliseconds },
             clipLoopSpeed = data.ReplayTime[^1].TotalSeconds / simulation.Elapsed.TotalSeconds,
+            interning = new { spriteCandidates = _spriteCandidates, spriteDefinitions = _spriteDefinitions.Count,
+                spriteDefinitionBytes = _spriteDefinitionBytes, previousSpriteReuses = _previousSpriteReuses,
+                sharedSpriteReuses = _sharedSpriteReuses, resourceDefinitions = _resourceDefinitions.Count,
+                uniqueRsiObjectsReferenced = _rsiResourceIds.Count },
+            allocationsBytes = new { startup = startupAllocatedBytes,
+                loadAndCheckpoint = loadedAllocatedBytes - Program.AllocatedAtStart - startupAllocatedBytes,
+                entityInitialization = initializedAllocatedBytes - loadedAllocatedBytes,
+                clipLoop = loopAllocatedBytes, projection = _projectionAllocatedBytes,
+                total = GC.GetTotalAllocatedBytes(precise: true) - Program.AllocatedAtStart },
+            gcCollections = new { clipLoop = loopCollections,
+                total = Enumerable.Range(0, 3).Select(gen => GC.CollectionCount(gen) - Program.CollectionsAtStart[gen]).ToArray() },
             managedBytes = GC.GetTotalMemory(false), peakWorkingSetBytes = Process.GetCurrentProcess().PeakWorkingSet64,
             outputBytes = output.Length, diagnosticOnly = true };
         File.WriteAllBytes(Path.Combine(Program.Output, "summary.json"), JsonSerializer.SerializeToUtf8Bytes(summary, Json));
@@ -230,54 +281,22 @@ public sealed partial class CaptureRunner
         List<object> upserts, List<object> audioEvents, bool initial)
     {
         var id = metadata.NetEntity.Id;
-        object? sprite = null;
+        int? spriteId = null;
         if (_entities.TryGetComponent<SpriteComponent>(uid, out var component))
-        {
-            var layers = component.AllLayers.Cast<SpriteComponent.Layer>().Select((layer, index) =>
-            {
-                var rsi = layer.RSI ?? component.BaseRSI;
-                if (rsi != null)
-                    _rsiPaths.Add(rsi.Path.ToString());
-                var shader = layer.ShaderPrototype?.ToString();
-                if (shader != null)
-                    _shaderPrototypes.Add(shader);
-                if (initial && (shader != null || layer.Shader != null))
-                    _shaderLayers++;
-                return new { index, layer.Visible, color = Color(layer.Color), scale = Vector(layer.Scale),
-                    offset = Vector(layer.Offset), rotation = layer.Rotation.Theta,
-                    rsiPath = rsi?.Path.ToString(), rsiState = layer.State.Name,
-                    texturePath = ResolveTexture(layer.Texture), layer.AnimationFrame, layer.AnimationTimeLeft,
-                    layer.AutoAnimated, layer.Loop, layer.Cycle, layer.Reversed,
-                    directionOffset = layer.DirOffset.ToString(), renderingStrategy = layer.RenderingStrategy.ToString(),
-                    shaderPrototype = shader, hasShader = layer.Shader != null,
-                    materialMutable = layer.Shader?.Mutable, shaderParametersUnavailable = layer.Shader != null,
-                    copyToShader = layer.CopyToShaderParameters != null };
-            }).ToArray();
-            if (layers.Length > 256)
-                throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
-            if (initial)
-            {
-                _sprites++;
-                _layers += layers.Length;
-            }
-            sprite = new { component.Visible, component.ContainerOccluded, component.DrawDepth, component.RenderOrder,
-                color = Color(component.Color), scale = Vector(component.Scale), offset = Vector(component.Offset),
-                rotation = component.Rotation.Theta, component.NoRotation, component.SnapCardinals,
-                component.EnableDirectionOverride, directionOverride = component.DirectionOverride.ToString(),
-                component.GranularLayersRendering, layers,
-                postShaders = _entities.System<SpriteSystem>().GetPostShaders(component).Select(post => new {
-                    post.Id, hasShader = post.Shader != null, post.GetScreenTexture, post.RaiseShaderEvent,
-                    shaderParametersUnavailable = true }).ToArray() };
-        }
+            spriteId = CaptureSprite(id, component, initial);
+        else
+            _previousSprites.Remove(id);
         var record = new { id, parentId = transform.ParentUid == EntityUid.Invalid ? (int?) null
                 : _entities.GetNetEntity(transform.ParentUid).Id,
             prototype = metadata.EntityPrototype?.ID,
             transform = new { x = transform.LocalPosition.X, y = transform.LocalPosition.Y, rotation = transform.LocalRotation.Theta },
             transform.Anchored, transform.NoLocalRotation,
-            isMap = _entities.HasComponent<MapComponent>(uid), isGrid = _entities.HasComponent<MapGridComponent>(uid), sprite };
+            isMap = _entities.HasComponent<MapComponent>(uid), isGrid = _entities.HasComponent<MapGridComponent>(uid), spriteId };
         var fingerprint = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(record, Json)));
         if (!_fingerprints.TryGetValue(id, out var previous) || previous != fingerprint)
         {
+            if (!_fingerprints.ContainsKey(id) && _fingerprints.Count >= 250_000)
+                throw new InvalidDataException("Diagnostic entity budget exceeded.");
             _fingerprints[id] = fingerprint;
             upserts.Add(record);
         }
@@ -285,8 +304,10 @@ public sealed partial class CaptureRunner
         {
             var audioState = audio.State;
             _soundPaths.Add(audio.FileName);
+            var resourceId = EnsureResource("sound", audio.FileName, BodyMetadata);
             var value = new { id, audio.FileName, startTime100ns = audio.AudioStart.Ticks,
-                state = audioState.ToString(), audio.Global, flags = (byte) audio.Flags,
+                startReplayTime100ns = checked(audio.AudioStart.Ticks - _sourceClockOrigin), resourceId,
+                state = EnumName(audioState), audio.Global, flags = (byte) audio.Flags,
                 parameters = new { volumeDb = float.IsFinite(audio.Params.Volume) ? (float?) audio.Params.Volume : null,
                     muted = float.IsNegativeInfinity(audio.Params.Volume), audio.Params.Pitch, audio.Params.Loop,
                     audio.Params.MaxDistance, audio.Params.ReferenceDistance, audio.Params.RolloffFactor,
@@ -325,10 +346,15 @@ public sealed partial class CaptureRunner
     {
         var start = Stopwatch.GetTimestamp();
         var bytes = JsonSerializer.SerializeToUtf8Bytes(record, Json);
-        if (bytes.Length > 64 * 1024 * 1024 || _output.Position + bytes.Length > 1024L * 1024 * 1024)
-            throw new InvalidDataException($"Diagnostic output budget exceeded ({bytes.Length} byte record).");
+        CheckOutputBudget(bytes.Length);
         _output.Write(bytes);
         _output.WriteByte((byte) '\n');
         _outputMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+    }
+
+    private void CheckOutputBudget(int length)
+    {
+        if (length > 64 * 1024 * 1024 || _output.Position + length + 1 > 1024L * 1024 * 1024)
+            throw new InvalidDataException($"Diagnostic output budget exceeded ({length} byte record).");
     }
 }

@@ -16,6 +16,13 @@ internal static class Program
     public static string Output = "";
     public static double Seconds = 10;
     public static double ResourceVerificationMilliseconds;
+    public static string ResourceBundleSha256 = "";
+    public static string ForkId = "";
+    public static int MaxSpriteDefinitions = 25_000;
+    public static long MaxSpriteDefinitionBytes = 128L * 1024 * 1024;
+    public static int MaxResourceDefinitions = 10_000;
+    public static readonly long AllocatedAtStart = GC.GetTotalAllocatedBytes(precise: true);
+    public static readonly int[] CollectionsAtStart = [GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2)];
 
     [STAThread]
     public static void Main(string[] args)
@@ -36,6 +43,15 @@ internal static class Program
                 Seconds = double.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture);
             if (!double.IsFinite(Seconds) || Seconds <= 0 || Seconds > 10)
                 throw new ArgumentOutOfRangeException(nameof(Seconds), "The diagnostic is capped at ten simulated seconds.");
+            if (values.TryGetValue("--max-sprite-definitions", out var definitions))
+                MaxSpriteDefinitions = int.Parse(definitions);
+            if (values.TryGetValue("--max-sprite-definition-bytes", out var bytes))
+                MaxSpriteDefinitionBytes = long.Parse(bytes);
+            if (values.TryGetValue("--max-resource-definitions", out var resourcesLimit))
+                MaxResourceDefinitions = int.Parse(resourcesLimit);
+            if (MaxSpriteDefinitions is <= 0 or > 100_000 || MaxResourceDefinitions is <= 0 or > 25_000
+                || MaxSpriteDefinitionBytes is <= 0 or > 512L * 1024 * 1024)
+                throw new ArgumentOutOfRangeException(nameof(MaxSpriteDefinitions), "Invalid bounded dictionary limits.");
 
             using var zip = ZipFile.OpenRead(Input);
             using var bundle = JsonDocument.Parse(zip.GetEntry("rt_content_bundle.json")!.Open());
@@ -49,6 +65,8 @@ internal static class Program
             if (build.GetProperty("version").GetString() != GameBuild)
                 throw new InvalidDataException("Unsupported game build; select its matching reader and resources.");
             var expectedHash = build.GetProperty("hash").GetString()!;
+            ResourceBundleSha256 = expectedHash.ToLowerInvariant();
+            ForkId = build.GetProperty("fork_id").GetString()!;
             var timer = Stopwatch.StartNew();
             var info = new FileInfo(resources);
             var stamp = resources + ".verified";
