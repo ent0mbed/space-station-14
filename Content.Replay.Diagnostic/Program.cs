@@ -12,13 +12,19 @@ internal static class Program
 {
     public const string GameBuild = "94087a918a2fae4571f5a529fe14ef7f5dce29a3";
     public const string EngineVersion = "289.0.3";
-    public const string SceneSchema = "ss14-diagnostic/0.6";
-    public const string SummarySchema = "ss14-diagnostic-summary/0.6";
+    public const string SceneSchema = "ss14-diagnostic/0.7";
+    public const string SummarySchema = "ss14-diagnostic-summary/0.7";
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
     public const string AudioTimingCapability = "native-audio-timing-metadata/1";
     public const string SpriteBoundsCapability = "native-sprite-local-bounds/1";
     public const string TileEdgeCapability = "native-tile-edge-inputs/1";
     public const string FrozenMaterialCapability = "native-frozen-material-snapshots/1";
+    public const string PresentationCapability = "native-sprite-presentation-samples/1";
+    public const int MaxPresentationOwners = 250_000;
+    public const int MaxPresentationLayersPerOwner = 256;
+    public const long MaxPresentationRetainedBytes = 64L * 1024 * 1024;
+    public static int? AssertPhaseEntity;
+    public static int AssertPhaseLayer;
     public const int MaxShaderParameterNameCharacters = 256;
     public const int MaxShaderParameters = 256;
     public const int MaxMaterialDefinitions = 4096;
@@ -55,7 +61,7 @@ internal static class Program
         {
             var values = new Dictionary<string, string>();
             string[] supportedOptions = ["--input", "--resources", "--output", "--seconds", "--profile", "--tiles",
-                "--max-sprite-definitions", "--max-sprite-definition-bytes", "--max-resource-definitions"];
+                "--max-sprite-definitions", "--max-sprite-definition-bytes", "--max-resource-definitions", "--assert-ordinary-phase"];
             for (var i = 0; i < args.Length; i += 2)
             {
                 if (i + 1 >= args.Length)
@@ -67,6 +73,16 @@ internal static class Program
             Input = Path.GetFullPath(values["--input"]);
             Output = Path.GetFullPath(values["--output"]);
             var resources = Resources = Path.GetFullPath(values["--resources"]);
+            if (values.TryGetValue("--assert-ordinary-phase", out var phaseProbe))
+            {
+                var parts = phaseProbe.Split(':');
+                if (parts.Length != 2 || !int.TryParse(parts[0], out var entityId)
+                    || entityId == 0 || !int.TryParse(parts[1], out var layerIndex)
+                    || layerIndex < 0 || layerIndex >= MaxPresentationLayersPerOwner)
+                    throw new ArgumentException("Expected --assert-ordinary-phase entityId:layerIndex.");
+                AssertPhaseEntity = entityId;
+                AssertPhaseLayer = layerIndex;
+            }
             if (values.TryGetValue("--profile", out var profile))
                 Profile = profile switch
                 {
