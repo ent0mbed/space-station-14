@@ -1,3 +1,220 @@
+diff --git a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
+index c0e01b4b3..3df7b096d 100644
+--- a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
++++ b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
+@@ -1,5 +1,7 @@
+ using System;
+ using System.Collections.Generic;
++using System.Collections.ObjectModel;
++using System.Linq;
+ using System.IO;
+ using System.Numerics;
+ using System.Threading.Tasks;
+@@ -36,10 +38,32 @@ namespace Robust.Client.Graphics.Clyde
+         private readonly List<IClydeWindow> _windows = new();
+         private int _nextWindowId = 2;
+         private long _nextViewportId = 1;
++        private long _nextShaderId = 1;
++        private readonly Dictionary<ClydeHandle, ReplayProgramSlot> _replayShaders = new();
++
++        private sealed class ReplayProgramSlot(ReplayShaderProgram value)
++        {
++            public ReplayShaderProgram Value = value;
++        }
++
++        private static ReplayShaderProgram RecordProgram(ParsedShader shader, string? name,
++            Dictionary<string, string>? defines, bool reloaded = false)
++        {
++            var uniforms = shader.Uniforms.Values.OrderBy(value => value.Name, StringComparer.Ordinal)
++                .Select(value => new ReplayShaderUniform(value.Name, value.Type.Type.GetNativeType(),
++                    value.Type.Precision.ToString(), value.Type.Count, value.DefaultValue)).ToArray();
++            return new ReplayShaderProgram(name, shader.LightMode.ToString(), shader.BlendMode.ToString(),
++                shader.Preset.ToString(), Array.AsReadOnly(shader.Includes.Select(value => value.ToString()).ToArray()),
++                new ReadOnlyDictionary<string, string>(defines == null
++                    ? new Dictionary<string, string>() : new Dictionary<string, string>(defines)),
++                Array.AsReadOnly(uniforms), reloaded);
++        }
+
+         public ShaderInstance InstanceShader(ShaderSourceResource handle, bool? light = null, ShaderBlendMode? blend = null)
+         {
+-            return new DummyShaderInstance();
++            var program = _replayShaders[handle.ClydeHandle];
++            return new DummyShaderInstance(program, light ?? handle.ParsedShader.LightMode != ShaderLightMode.Unshaded,
++                (blend ?? handle.ParsedShader.BlendMode).ToString());
+         }
+
+         public ClydeHeadless()
+@@ -295,12 +319,16 @@ namespace Robust.Client.Graphics.Clyde
+
+         public ClydeHandle LoadShader(ParsedShader shader, string? name = null, Dictionary<string,string>? defines = null)
+         {
+-            return default;
++            var handle = new ClydeHandle(_nextShaderId++);
++            _replayShaders.Add(handle, new ReplayProgramSlot(RecordProgram(shader, name, defines)));
++            return handle;
+         }
+
+         public void ReloadShader(ClydeHandle handle, ParsedShader newShader)
+         {
+-            // Nada.
++            var program = _replayShaders[handle];
++            program.Value = RecordProgram(newShader, program.Value.RootPath,
++                new Dictionary<string, string>(program.Value.Defines), reloaded: true);
+         }
+
+         public void Ready()
+@@ -368,79 +396,57 @@ namespace Robust.Client.Graphics.Clyde
+             }
+         }
+
+-        private sealed class DummyShaderInstance : ShaderInstance
++        private sealed class DummyShaderInstance(ReplayProgramSlot program, bool hasLighting, string blendMode)
++            : ShaderInstance, IReplayShaderSnapshot
+         {
+-            private protected override ShaderInstance DuplicateImpl()
+-            {
+-                return new DummyShaderInstance();
+-            }
++            private readonly Dictionary<string, ReplayShaderParameter> _parameters = new(StringComparer.Ordinal);
++            private ReplayShaderSnapshot? _frozenSnapshot;
+
+-            private protected override void SetParameterImpl(string name, float value)
++            public ReplayShaderSnapshot CaptureReplaySnapshot()
+             {
++                ObjectDisposedException.ThrowIf(Disposed, this);
++                if (Mutable)
++                    throw new InvalidOperationException("Mutable replay materials are unsupported.");
++                if (_frozenSnapshot == null || !ReferenceEquals(_frozenSnapshot.Program, program.Value))
++                    _frozenSnapshot = new ReplayShaderSnapshot(program.Value, false, hasLighting, blendMode, Stencil,
++                        Array.AsReadOnly(_parameters.Values.OrderBy(value => value.Name, StringComparer.Ordinal).ToArray()));
++                return _frozenSnapshot;
+             }
+
+-            private protected override void SetParameterImpl(string name, float[] value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, Vector2 value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, Vector2[] value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, Vector3 value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, Vector4 value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, Color value)
+-            {
+-            }
++            private void Record(string name, string kind, object? value, string? reason = null)
++                => _parameters[name] = new ReplayShaderParameter(name, kind, value, reason);
+
+-            private protected override void SetParameterImpl(string name, Color[] value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, int value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, Vector2i value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, bool value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, bool[] value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, in Matrix3x2 value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, in Matrix4x4 value)
+-            {
+-            }
+-
+-            private protected override void SetParameterImpl(string name, Texture value)
+-            {
+-            }
+-
+-            private protected override void SetStencilImpl(StencilParameters value)
++            private protected override ShaderInstance DuplicateImpl()
+             {
+-            }
++                var copy = new DummyShaderInstance(program, hasLighting, blendMode);
++                foreach (var (name, value) in _parameters)
++                    copy._parameters.Add(name, value);
++                copy.Stencil = Stencil;
++                return copy;
++            }
++
++            private protected override void SetParameterImpl(string name, float value) => Record(name, "float32", value);
++            private protected override void SetParameterImpl(string name, Vector2 value) => Record(name, "vec2", value);
++            private protected override void SetParameterImpl(string name, Vector3 value) => Record(name, "vec3", value);
++            private protected override void SetParameterImpl(string name, Vector4 value) => Record(name, "vec4", value);
++            private protected override void SetParameterImpl(string name, Color value) => Record(name, "color-srgb", value);
++            private protected override void SetParameterImpl(string name, int value) => Record(name, "int32", value);
++            private protected override void SetParameterImpl(string name, Vector2i value) => Record(name, "ivec2", value);
++            private protected override void SetParameterImpl(string name, bool value) => Record(name, "bool", value);
++            private protected override void SetParameterImpl(string name, float[] value) => Record(name, "float32-array", null, "array-not-supported");
++            private protected override void SetParameterImpl(string name, Vector2[] value) => Record(name, "vec2-array", null, "array-not-supported");
++            private protected override void SetParameterImpl(string name, Color[] value) => Record(name, "color-srgb-array", null, "array-not-supported");
++            private protected override void SetParameterImpl(string name, bool[] value) => Record(name, "bool-array", null, "array-not-supported");
++            private protected override void SetParameterImpl(string name, in Matrix3x2 value) => Record(name, "mat3x2", null, "matrix-not-supported");
++            private protected override void SetParameterImpl(string name, in Matrix4x4 value) => Record(name, "mat4", null, "matrix-not-supported");
++            private protected override void SetParameterImpl(string name, Texture value) => Record(name, "texture", null, "texture-not-captured");
++            private protected override void SetStencilImpl(StencilParameters value) { }
+
+             public override void Dispose()
+             {
++                Disposed = true;
++                _parameters.Clear();
++                _frozenSnapshot = null;
+             }
+         }
+
+diff --git a/Robust.Client/Graphics/Shaders/ReplayShaderSnapshot.cs b/Robust.Client/Graphics/Shaders/ReplayShaderSnapshot.cs
+new file mode 100644
+index 000000000..5f5f3356a
+--- /dev/null
++++ b/Robust.Client/Graphics/Shaders/ReplayShaderSnapshot.cs
+@@ -0,0 +1,25 @@
++using System.Collections.Generic;
++
++namespace Robust.Client.Graphics;
++
++/// <summary>Converter-owned, read-only headless recording seam at engine 289.0.3.</summary>
++public interface IReplayShaderSnapshot
++{
++    ReplayShaderSnapshot CaptureReplaySnapshot();
++}
++
++public sealed record ReplayShaderUniform(string Name, string Type, string Precision,
++    int? ArrayLength, string? Initializer);
++
++public sealed record ReplayShaderProgram(string? RootPath, string LightMode, string BlendMode,
++    string Preset, IReadOnlyList<string> Includes, IReadOnlyDictionary<string, string> Defines,
++    IReadOnlyList<ReplayShaderUniform> Uniforms, bool Reloaded);
++
++// Value is either a boxed immutable scalar/value-type copy, or null with an explicit reason.
++// Arrays and textures are never retained through this seam.
++public sealed record ReplayShaderParameter(string Name, string Kind, object? Value,
++    string? UnavailableReason);
++
++public sealed record ReplayShaderSnapshot(ReplayShaderProgram Program, bool Mutable,
++    bool HasLighting, string BlendMode, StencilParameters Stencil,
++    IReadOnlyList<ReplayShaderParameter> Parameters);
 diff --git a/Robust.Client/Replays/Loading/BufferedReplayDataProvider.cs b/Robust.Client/Replays/Loading/BufferedReplayDataProvider.cs
 index a48c1b271..aa2aea9a3 100644
 --- a/Robust.Client/Replays/Loading/BufferedReplayDataProvider.cs

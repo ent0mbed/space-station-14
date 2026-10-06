@@ -69,6 +69,7 @@ public sealed partial class CaptureRunner
         finally
         {
             _resources.OnRawTextureLoaded -= OnTexture;
+            _shaderBundle?.Dispose();
             if (_captureTransformSystem is { } transformSystem)
                 transformSystem.OnGlobalMoveEvent -= OnNativeMove;
             _captureTransformSystem = null;
@@ -130,7 +131,7 @@ public sealed partial class CaptureRunner
         _output = output;
         Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
             spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
@@ -141,7 +142,11 @@ public sealed partial class CaptureRunner
                 bundleSha256 = Program.ResourceBundleSha256, roundId, sourceStartTick = data.TickOffset.Value },
             dictionaryLimits = new { spriteDefinitions = Program.MaxSpriteDefinitions,
                 spriteDefinitionBytes = Program.MaxSpriteDefinitionBytes, resourceDefinitions = Program.MaxResourceDefinitions,
-                shaderParameterNameCharacters = Program.MaxShaderParameterNameCharacters },
+                shaderParameterNameCharacters = Program.MaxShaderParameterNameCharacters,
+                materialDefinitions = Program.MaxMaterialDefinitions, materialDefinitionBytes = Program.MaxMaterialDefinitionBytes,
+                shaderSourceDefinitions = Program.MaxShaderSourceDefinitions, shaderSourceDefinitionBytes = Program.MaxShaderSourceDefinitionBytes,
+                shaderParameters = Program.MaxShaderParameters, shaderIncludes = Program.MaxShaderIncludes,
+                shaderSourceFileBytes = Program.MaxShaderSourceFileBytes, shaderClosureBytes = Program.MaxShaderClosureBytes },
             loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies()
                 .Where(assembly => !assembly.IsDynamic && assembly.GetName().Name is { } name
                     && (name.StartsWith("Content.", StringComparison.Ordinal)
@@ -230,6 +235,7 @@ public sealed partial class CaptureRunner
             _projectionAllocatedBytes += GC.GetTotalAllocatedBytes(precise: false) - projectionAllocatedStart;
             _upserts += upserts.Count;
             WriteResourceDefinitions();
+            WriteShaderDefinitions();
             WriteSpriteDefinitions();
             // The initial native world is large. Keep JSONL records bounded without dropping entities.
             var chunkCount = index == 0 ? (upserts.Count + 999) / 1000 : 1;
@@ -260,7 +266,8 @@ public sealed partial class CaptureRunner
                     }, delaysSeconds = state.GetDelays() }).ToArray() }).ToArray();
         var inventory = new { kind = "resources", rsi, images = _texturePaths.Values.Distinct().Order().ToArray(),
             sounds = _soundPaths.Order().ToArray(), shaderPrototypes = _shaderPrototypes.Order().ToArray(),
-            missing = new[] { "runtime-shader-parameters", "shader-source-include-closure", "tile-chunks",
+            missing = new[] { "mutable-shader-parameters", "shader-array-matrix-texture-values",
+                "shader-render-only-inputs", "shader-hardware-defines", "tile-chunks",
                 "complete-client-only-sprite-dirty-tracking", "image-bodies-and-atlas-crops",
                 "client-recording-audio-message-payloads" } };
         var inventoryMs = Stopwatch.GetElapsedTime(inventoryStart).TotalMilliseconds;
@@ -273,7 +280,7 @@ public sealed partial class CaptureRunner
 
         var summary = new { schema = Program.SummarySchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
@@ -282,6 +289,9 @@ public sealed partial class CaptureRunner
                 starts = _audioStarts, changes = _audioChanges, removals = _audioRemovals,
                 soundMetadata = new { available = _soundMetadataAvailable, unavailable = _soundMetadataUnavailable },
                 nativeStateTypes = _audioStateTypes, messageTypes = _messageTypes },
+            materials = new { definitions = _materialDefinitions.Count, definitionBytes = _materialDefinitionBytes,
+                sources = _shaderSourceDefinitions.Count, sourceDefinitionBytes = _shaderSourceDefinitionBytes,
+                unavailable = _materialUnavailable },
             stagesMilliseconds = new { startup = startupMs, resourceVerification = Program.ResourceVerificationMilliseconds,
                 loadAndCheckpoint = loadMs, zipZstdNativeRead = native.ReadMilliseconds,
                 playbackZipZstdNativeRead = native.PlaybackReadMilliseconds,
