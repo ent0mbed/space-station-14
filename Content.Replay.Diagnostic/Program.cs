@@ -59,6 +59,25 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args is ["--help"] or ["-h"])
+        {
+            Console.WriteLine("""
+                Version-pinned SS14 replay diagnostic reader (game 94087a91, engine 289.0.3).
+
+                Usage:
+                  --input REPLAY.zip --resources SS14.Client.zip --output DIRECTORY
+                  [--profile ten-second|minute-preview] [--seconds NUMBER] [--tiles true|false]
+                  [--assert-ordinary-phase ENTITY_ID:LAYER_INDEX]
+                  [--max-sprite-definitions NUMBER] [--max-sprite-definition-bytes NUMBER]
+                  [--max-resource-definitions NUMBER]
+
+                Default profile: ten-second; default duration: 10 simulated seconds; tiles: false.
+                Profiles allow at most 10 or 60 simulated seconds. Resources must match the replay build/hash.
+                --help and -h print this usage without opening replay/resources or starting the engine.
+                """);
+            return;
+        }
+
         try
         {
             var values = new Dictionary<string, string>();
