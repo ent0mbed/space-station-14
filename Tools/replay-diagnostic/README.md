@@ -56,10 +56,9 @@ already set. The verified three-second native run used about 3.4 GiB peak RSS;
 the heap ceiling is not a total process memory bound. Capture guards remain
 unchanged.
 
-Ordinary animation eligibility defaults to `cached` for this pinned adapter.
+Ordinary animation eligibility reuses cached selection for stable owners in this pinned adapter.
 Published sprite and RSI mutations and inspection must stay on the engine thread.
-Use `--ordinary-animation-eligibility reference` to scan every pass. Owners that
-share native layers automatically retain the full scan in either mode.
+Owners that share native layers are classified on every pass.
 
 The clean bootstrap/build/help check was verified on **Debian 13, Linux x64**,
 using .NET 10.0.100 and an existing NuGet package cache. It did not perform another
