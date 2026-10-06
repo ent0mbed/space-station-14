@@ -233,9 +233,10 @@ public sealed partial class CaptureRunner
                     ProjectNative(uid.Value, upserts, audioEvents, false);
                 }
             }
-            if (index > 0) ProjectIndependentAppearance(upserts, audioEvents);
+            InspectSpritePresentation(index > 0);
+            if (index > 0) ProjectPresentationAppearance(upserts, audioEvents);
             ProjectMoved(upserts, audioEvents, index == 0);
-            var spritePresentationReplacements = CaptureSpritePresentation(data.ReplayTime[index].Ticks, index);
+            var spritePresentationReplacements = FinishSpritePresentation(data.ReplayTime[index].Ticks, index);
             if (index == 0)
                 _initialEntities = upserts.Count;
             _projectionMs += Stopwatch.GetElapsedTime(projectionStart).TotalMilliseconds;
@@ -317,6 +318,17 @@ public sealed partial class CaptureRunner
                 independentAppearanceCandidates = _independentAppearanceCandidates, retainedBytes = _presentationRetainedBytes,
                 peakRetainedBytes = _presentationRetainedPeakBytes, maximumFramePresentationJSONBytes = _maximumFramePresentationJSONBytes,
                 retainedOwners = _presentationStates.Count, assertion = _ordinaryPhaseProbe },
+            presentationInspection = new {
+                queue = new { ownerVisits = _queueOwnerVisits, layerVisits = _queueLayerVisits, milliseconds = _queueMs },
+                fused = new { ownerVisits = _postOwnerVisits, layerVisits = _postLayerVisits, milliseconds = _fusedInspectionMs },
+                appearance = new { layerComparisons = _appearanceLayerComparisons, projectionMilliseconds = _appearanceProjectionMs },
+                phase = new { layerVisits = _phaseLayerVisits, baselineOwnerVisits = _baselineOwnerVisits,
+                    baselineLayerVisits = _baselineLayerVisits, baselineDrainMilliseconds = _baselineDrainMs,
+                    ownedArrayCopies = _presentationArraysAllocated },
+                commitMillisecondsExcludingSerialization = _presentationCommitMs,
+                serialization = new { values = _presentationSerializations, milliseconds = _presentationSerializationMs },
+                combinedLiveStagedPeakBytes = _presentationCombinedPeakBytes,
+                timingMeaning = "Queue, fused inspection, candidate projection, baseline drain, commit excluding serialization, and serialization are disjoint. Appearance comparisons and phase collection share the fused interval; do not count it twice. These intervals are nested in existing apply/projection totals." },
             parentClosure = new { ancestorCandidates = _ancestorCandidates, ancestorAdditions = _ancestorAdditions,
                 clientAncestors = _clientAncestors, movedCandidates = _movedCandidates,
                 observedNativeDeletions = _observedDeletions, maximumDepth = _maxParentDepth,
@@ -341,6 +353,7 @@ public sealed partial class CaptureRunner
         var id = metadata.NetEntity.Id;
         TrackPresentationOwner(id, uid);
         int? spriteId = null;
+        var previousSpriteId = _previousSprites.GetValueOrDefault(id);
         if (_entities.TryGetComponent<SpriteComponent>(uid, out var component))
             spriteId = CaptureSprite(uid, id, component, initial);
         else
@@ -348,6 +361,7 @@ public sealed partial class CaptureRunner
             _previousSprites.Remove(id);
             RemovePresentationState(id);
         }
+        if ((spriteId ?? 0) != previousSpriteId) _presentationBaselineOwners.Add(id);
         var record = new { id, parentId = transform.ParentUid == EntityUid.Invalid ? (int?) null
                 : _entities.GetNetEntity(transform.ParentUid).Id,
             prototype = metadata.EntityPrototype?.ID,
