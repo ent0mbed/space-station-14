@@ -88,8 +88,10 @@ void Parity(SpriteComponent sprite, bool expected, string message, object? eligi
     Check(reference == expected && cached == reference, message);
 }
 
-Check(strategy.GetValue(null)!.ToString() == "Reference" && AnimationEligibility.Parse(null) == AnimationEligibilityStrategy.Reference,
-    "Reference must remain the default.");
+Check(strategy.GetValue(null)!.ToString() == "Cached" && AnimationEligibility.Parse(null) == AnimationEligibilityStrategy.Cached
+    && AnimationEligibility.Parse("reference") == AnimationEligibilityStrategy.Reference
+    && AnimationEligibility.Parse("cached") == AnimationEligibilityStrategy.Cached,
+    "Cached must be the default, with both explicit strategies available.");
 try { AnimationEligibility.Parse("active-only"); throw new InvalidOperationException("Unknown strategy accepted."); }
 catch (ArgumentException) { checks++; }
 

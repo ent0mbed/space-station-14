@@ -12,8 +12,8 @@ internal static class AnimationEligibility
 
     public static AnimationEligibilityStrategy Parse(string? value) => value switch
     {
-        null or "reference" => AnimationEligibilityStrategy.Reference,
-        "cached" => AnimationEligibilityStrategy.Cached,
+        null or "cached" => AnimationEligibilityStrategy.Cached,
+        "reference" => AnimationEligibilityStrategy.Reference,
         _ => throw new ArgumentException($"Unknown ordinary animation eligibility strategy: {value}.")
     };
 }

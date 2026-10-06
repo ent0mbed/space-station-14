@@ -12,7 +12,7 @@ internal static class Program
     public const string EngineVersion = "289.0.3";
     public const string EngineCommit = "36905986f6809420dbc78168fc494f91723d356b";
     public static PresentationPolicy Presentation = PresentationPolicy.Exact;
-    public static AnimationEligibilityStrategy OrdinaryAnimationEligibility = AnimationEligibilityStrategy.Reference;
+    public static AnimationEligibilityStrategy OrdinaryAnimationEligibility = AnimationEligibilityStrategy.Cached;
     public static string SceneSchema => Presentation.SceneSchema;
     public static string SummarySchema => Presentation.SummarySchema;
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
@@ -85,7 +85,8 @@ internal static class Program
                 Default profile: ten-second; default duration: 10 simulated seconds; tiles: false.
                 Presentation defaults to exact (schema 0.8). Visual (schema 0.9) holds countdown-only changes.
                 Presentation policy is independent of the duration profile and requires matching consumers.
-                Ordinary animation eligibility defaults to reference; cached is an unverified experiment.
+                Ordinary animation eligibility defaults to cached on the pinned serial engine thread.
+                Use reference for a full scan; shared layer owners always use a full scan.
                 Export is the default command. Without --resources, resources are downloaded to the local cache.
                 Resources are checked against the replay's SHA-256 on download and every cache reuse.
                 Profiles allow at most 10 or 60 simulated seconds. Resources must match the replay build/hash.
