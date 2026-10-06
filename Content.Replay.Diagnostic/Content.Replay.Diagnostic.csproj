@@ -15,4 +15,15 @@
   <Import Project="../RobustToolbox/MSBuild/Robust.Properties.targets" />
   <Import Project="../RobustToolbox/Imports/Client.props" />
   <Import Project="../RobustToolbox/Imports/Shared.props" />
+  <!-- Robust.Client is a library dependency here. Its referenced RID and portable
+       builds can both offer executable files; only this reader owns an apphost. -->
+  <Target Name="KeepReaderPublishEntryPoint" BeforeTargets="_HandleFileConflictsForPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'%(ResolvedFileToPublish.RelativePath)' == 'Robust.Client' Or
+                   '%(ResolvedFileToPublish.RelativePath)' == 'Robust.Client.exe' Or
+                   '%(ResolvedFileToPublish.RelativePath)' == 'Robust.Client.deps.json' Or
+                   '%(ResolvedFileToPublish.RelativePath)' == 'Robust.Client.runtimeconfig.json'" />
+    </ItemGroup>
+  </Target>
 </Project>

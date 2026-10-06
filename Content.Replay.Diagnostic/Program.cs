@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.IO.Compression;
-using System.Security.Cryptography;
 using System.Text.Json;
 using Robust.Client;
 using Robust.Client.Replays.Loading;
@@ -12,6 +10,7 @@ internal static class Program
 {
     public const string GameBuild = "94087a918a2fae4571f5a529fe14ef7f5dce29a3";
     public const string EngineVersion = "289.0.3";
+    public const string EngineCommit = "36905986f6809420dbc78168fc494f91723d356b";
     public const string SceneSchema = "ss14-diagnostic/0.8";
     public const string SummarySchema = "ss14-diagnostic-summary/0.8";
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
@@ -59,19 +58,29 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Length == 0)
+        {
+            Console.WriteLine("Usage: ss14-replay inspect|resources|export --input REPLAY.zip [options]. See --help.");
+            return;
+        }
         if (args is ["--help"] or ["-h"])
         {
             Console.WriteLine("""
-                Version-pinned SS14 replay diagnostic reader (game 94087a91, engine 289.0.3).
+                SS14 replay reader (fork wizards, game 94087a91, engine 289.0.3).
 
                 Usage:
-                  --input REPLAY.zip --resources SS14.Client.zip --output DIRECTORY
+                  inspect --input REPLAY.zip
+                  resources --input REPLAY.zip [--cache DIRECTORY] [--resources SS14.Client.zip]
+                  export --input REPLAY.zip --output DIRECTORY [--cache DIRECTORY]
+                  [--resources SS14.Client.zip]
                   [--profile ten-second|minute-preview] [--seconds NUMBER] [--tiles true|false]
                   [--assert-ordinary-phase ENTITY_ID:LAYER_INDEX]
                   [--max-sprite-definitions NUMBER] [--max-sprite-definition-bytes NUMBER]
                   [--max-resource-definitions NUMBER]
 
                 Default profile: ten-second; default duration: 10 simulated seconds; tiles: false.
+                Export is the default command. Without --resources, resources are downloaded to the local cache.
+                Resources are checked against the replay's SHA-256 on download and every cache reuse.
                 Profiles allow at most 10 or 60 simulated seconds. Resources must match the replay build/hash.
                 --help and -h print this usage without opening replay/resources or starting the engine.
                 """);
@@ -80,20 +89,45 @@ internal static class Program
 
         try
         {
+            var command = args.Length > 0 && !args[0].StartsWith('-') ? args[0] : "export";
+            if (command is not ("inspect" or "resources" or "export"))
+                throw new ArgumentException($"Unknown command: {command}. Expected inspect, resources, or export.");
+            if (args.Length > 0 && args[0] == command) args = args[1..];
             var values = new Dictionary<string, string>();
-            string[] supportedOptions = ["--input", "--resources", "--output", "--seconds", "--profile", "--tiles",
+            string[] exportOptions = ["--input", "--resources", "--cache", "--output", "--seconds", "--profile", "--tiles",
                 "--max-sprite-definitions", "--max-sprite-definition-bytes", "--max-resource-definitions", "--assert-ordinary-phase"];
+            string[] supportedOptions = command switch
+            {
+                "inspect" => ["--input"],
+                "resources" => ["--input", "--resources", "--cache"],
+                _ => exportOptions
+            };
             for (var i = 0; i < args.Length; i += 2)
             {
                 if (i + 1 >= args.Length)
-                    throw new ArgumentException("Each option requires a value; required: --input, --resources, --output.");
+                    throw new ArgumentException("Each option requires a value. See --help.");
                 if (!supportedOptions.Contains(args[i], StringComparer.Ordinal))
                     throw new ArgumentException($"Unknown option: {args[i]}.");
                 values.Add(args[i], args[i + 1]);
             }
             Input = Path.GetFullPath(values["--input"]);
+            var replay = ReplayIdentity.Read(Input);
+            if (command == "inspect")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(replay.Description()));
+                return;
+            }
+            replay.RequireSupported();
+            if (command == "resources")
+            {
+                var resolved = ReplayResources.Resolve(replay, values.GetValueOrDefault("--resources"),
+                    values.GetValueOrDefault("--cache", ReplayResources.DefaultCache), completeCache: true);
+                Console.WriteLine(JsonSerializer.Serialize(new { resources = resolved.Folder, clientZip = resolved.ClientZip,
+                    manifest = Path.Combine(resolved.Folder!, "resource-manifest.json"), sha256 = replay.ResourceSha256,
+                    gameBuild = replay.GameBuild, engineVersion = replay.EngineVersion, engineCommit = EngineCommit }));
+                return;
+            }
             Output = Path.GetFullPath(values["--output"]);
-            var resources = Resources = Path.GetFullPath(values["--resources"]);
             if (values.TryGetValue("--assert-ordinary-phase", out var phaseProbe))
             {
                 var parts = phaseProbe.Split(':');
@@ -128,31 +162,11 @@ internal static class Program
                 || MaxSpriteDefinitionBytes is <= 0 or > 512L * 1024 * 1024)
                 throw new ArgumentOutOfRangeException(nameof(MaxSpriteDefinitions), "Invalid bounded dictionary limits.");
 
-            using var zip = ZipFile.OpenRead(Input);
-            using var bundle = JsonDocument.Parse(zip.GetEntry("rt_content_bundle.json")!.Open());
-            var engine = bundle.RootElement.GetProperty("engine_version").GetString();
-            if (engine != EngineVersion)
-            {
-                var direction = Version.Parse(engine!) > Version.Parse(EngineVersion) ? "future" : "older";
-                throw new InvalidDataException($"Unsupported {direction} engine {engine}; this explicit reader supports only {EngineVersion}.");
-            }
-            var build = bundle.RootElement.GetProperty("base_build");
-            if (build.GetProperty("version").GetString() != GameBuild)
-                throw new InvalidDataException("Unsupported game build; select its matching reader and resources.");
-            var expectedHash = build.GetProperty("hash").GetString()!;
-            ResourceBundleSha256 = expectedHash.ToLowerInvariant();
-            ForkId = build.GetProperty("fork_id").GetString()!;
+            ResourceBundleSha256 = replay.ResourceSha256;
+            ForkId = replay.ForkId;
             var timer = Stopwatch.StartNew();
-            var info = new FileInfo(resources);
-            var stamp = resources + ".verified";
-            var identity = $"{expectedHash}:{info.Length}:{info.LastWriteTimeUtc.Ticks}";
-            if (!File.Exists(stamp) || File.ReadAllText(stamp) != identity)
-            {
-                using var resourceFile = File.OpenRead(resources);
-                if (!Convert.ToHexString(SHA256.HashData(resourceFile)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException("Matching resource archive SHA-256 mismatch.");
-                File.WriteAllText(stamp, identity);
-            }
+            var resources = Resources = ReplayResources.Resolve(replay, values.GetValueOrDefault("--resources"),
+                values.GetValueOrDefault("--cache", ReplayResources.DefaultCache)).ClientZip;
             ResourceVerificationMilliseconds = timer.Elapsed.TotalMilliseconds;
             Directory.CreateDirectory(Output);
 

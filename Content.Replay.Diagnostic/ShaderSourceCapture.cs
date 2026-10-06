@@ -7,9 +7,9 @@ namespace Content.Replay.Diagnostic;
 
 public sealed partial class CaptureRunner
 {
-    private const string EngineCommit = "36905986f6809420dbc78168fc494f91723d356b";
-    private const string StockRoot = "/Shaders/Internal/default-sprite.swsl";
-    private const string StockRootSHA256 = "21941e32b407ddf3a9ce5d113d4d03067c13923a43a42f6160b8af1b2366ea99";
+    private const string EngineCommit = Program.EngineCommit;
+    private const string StockRoot = ReplayResources.StockShaderPath;
+    private const string StockRootSHA256 = ReplayResources.StockShaderHash;
     private readonly Dictionary<ReplayShaderProgram, int> _shaderPrograms = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, int> _shaderSourceIdentities = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ShaderFile> _shaderFiles = new(StringComparer.Ordinal);
@@ -83,11 +83,7 @@ public sealed partial class CaptureRunner
     private ShaderFile[] EngineShaderInputs()
     {
         if (_engineShaderInputs != null) return _engineShaderInputs;
-        (string Name, string Hash)[] expected = [
-            ("z-library.glsl", "ae0b33140c4d6e33af7943ef0432b9397d9996d39fda1c1e9d0ed3b7847e3e89"),
-            ("base-default.frag", "c94e068b83eada24ba707f6528d04c6166cc745c28d7f0568b3167d26fbb25ff"),
-            ("base-default.vert", "22c714895843b6e99b70216e5b8a1b346b12d7f47bce9687b6d2946c815ba95c")];
-        _engineShaderInputs = expected.Select(item =>
+        _engineShaderInputs = ReplayResources.EngineInputs.Select(item =>
         {
             var name = "Robust.Client.Graphics.Clyde.Shaders." + item.Name;
             using var input = typeof(ShaderInstance).Assembly.GetManifestResourceStream(name)
