@@ -29,7 +29,7 @@ internal sealed record ReplayIdentity(string EngineVersion, string GameBuild, st
                 throw new InvalidDataException("Replay metadata exceeds 64 KiB.");
             bounded.Write(buffer, 0, count);
         }
-        using var document = JsonDocument.Parse(bounded.ToArray());
+        using var document = JsonDocument.Parse(bounded.ToArray(), new JsonDocumentOptions { AllowDuplicateProperties = false });
         var bundle = document.RootElement;
         var build = bundle.GetProperty("base_build");
         var hash = Text(build, "hash", 64).ToLowerInvariant();
@@ -88,6 +88,7 @@ internal static class ReplayResources
     private static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        AllowDuplicateProperties = false,
         UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow
     };
 
@@ -107,9 +108,10 @@ internal static class ReplayResources
         var root = Path.GetFullPath(cache);
         var scope = new ResourceScope(replay.GameBuild, replay.ResourceSha256, replay.EngineVersion, Program.EngineCommit);
         var directory = Path.Combine(root, scope.GameBuild, scope.BundleSha256, scope.EngineVersion, scope.EngineCommit);
+        CheckCacheDirectory(root, directory, allowMissing: true);
         if (Directory.Exists(directory))
         {
-            Validate(directory, scope);
+            Validate(root, directory, scope);
             Console.Error.WriteLine($"Using verified cached resources: {directory}");
             return new ResolvedResources(Path.Combine(directory, "SS14.Client.zip"), directory);
         }
@@ -149,10 +151,11 @@ internal static class ReplayResources
                 new CachedClientZip("SS14.Client.zip", new FileInfo(client).Length, replay.ResourceSha256), files,
                 new CachedEngineNotice(NoticePath, 1074, NoticeHash, EngineCopyright));
             File.WriteAllBytes(Path.Combine(stage, ManifestName), JsonSerializer.SerializeToUtf8Bytes(manifest, Json));
-            Validate(stage, scope);
+            Validate(root, stage, scope);
             Directory.CreateDirectory(Path.GetDirectoryName(directory)!);
+            CheckCacheDirectory(root, directory, allowMissing: true);
             try { Directory.Move(stage, directory); }
-            catch (IOException) when (Directory.Exists(directory)) { Validate(directory, scope); }
+            catch (IOException) when (Directory.Exists(directory)) { Validate(root, directory, scope); }
         }
         finally
         {
@@ -191,7 +194,7 @@ internal static class ReplayResources
             if (bytes.Length + count > MaxMetadataBytes) throw new InvalidDataException("Build tree metadata exceeds 64 KiB.");
             bytes.Write(buffer, 0, count);
         }
-        using var document = JsonDocument.Parse(bytes.ToArray());
+        using var document = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions { AllowDuplicateProperties = false });
         var tree = document.RootElement;
         if (tree.GetProperty("sha").GetString() != replay.GameBuild || tree.GetProperty("truncated").GetBoolean())
             throw new InvalidDataException("Authoritative game tree identity is incomplete or mismatched.");
@@ -202,11 +205,9 @@ internal static class ReplayResources
             throw new InvalidDataException("The game's authoritative engine commit does not match this compiled reader.");
     }
 
-    private static void Validate(string directory, ResourceScope scope)
+    private static void Validate(string root, string directory, ResourceScope scope)
     {
-        var path = Path.Combine(directory, ManifestName);
-        if (!File.Exists(path) || new FileInfo(path).Length > MaxMetadataBytes)
-            throw new InvalidDataException("Resource cache is incomplete or its manifest is oversized.");
+        var path = CacheFile(root, directory, ManifestName, MaxMetadataBytes);
         var manifest = JsonSerializer.Deserialize<ResourceManifest>(File.ReadAllBytes(path), Json);
         var notice = new CachedEngineNotice(NoticePath, 1074, NoticeHash, EngineCopyright);
         if (manifest == null || manifest.Schema != "ss14-replay-resources/0.1" || manifest.Scope != scope
@@ -214,16 +215,51 @@ internal static class ReplayResources
             || manifest.ClientZip.Sha256 != scope.BundleSha256 || manifest.EngineFiles == null
             || !manifest.EngineFiles.SequenceEqual(EngineFiles()) || manifest.EngineNotice != notice)
             throw new InvalidDataException("Resource cache manifest does not match the complete supported build scope.");
-        Verify(Path.Combine(directory, "SS14.Client.zip"), scope.BundleSha256, manifest.ClientZip.SizeBytes);
-        foreach (var file in manifest.EngineFiles) Verify(Path.Combine(directory, file.LocalPath), file.Sha256, file.SizeBytes);
-        Verify(Path.Combine(directory, notice.LocalPath), notice.Sha256, notice.SizeBytes);
+        Verify(CacheFile(root, directory, "SS14.Client.zip", MaxArchiveBytes), scope.BundleSha256, manifest.ClientZip.SizeBytes);
+        foreach (var file in manifest.EngineFiles)
+            Verify(CacheFile(root, directory, file.LocalPath, Program.MaxShaderSourceFileBytes), file.Sha256, file.SizeBytes);
+        Verify(CacheFile(root, directory, notice.LocalPath, MaxMetadataBytes), notice.Sha256, notice.SizeBytes);
+    }
+
+    private static void CheckCacheDirectory(string root, string directory, bool allowMissing = false)
+    {
+        var relative = Path.GetRelativePath(root, Path.GetFullPath(directory));
+        if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new InvalidDataException("Resource cache path escapes its root.");
+        var current = root;
+        var components = relative == "." ? Array.Empty<string>()
+            : relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i <= components.Length; i++)
+        {
+            if (i != 0) current = Path.Combine(current, components[i - 1]);
+            FileAttributes attributes;
+            try { attributes = File.GetAttributes(current); }
+            catch (FileNotFoundException) when (allowMissing) { return; }
+            catch (DirectoryNotFoundException) when (allowMissing) { return; }
+            if ((attributes & FileAttributes.Directory) == 0 || (attributes & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException($"Resource cache requires ordinary directories without links: {current}.");
+        }
+    }
+
+    private static string CacheFile(string root, string directory, string relative, long maximum)
+    {
+        var path = Path.GetFullPath(Path.Combine(directory, relative));
+        CheckCacheDirectory(root, Path.GetDirectoryName(path)!);
+        var attributes = File.GetAttributes(path);
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint | FileAttributes.Device)) != 0)
+            throw new InvalidDataException($"Resource cache requires regular files without links: {path}.");
+        // Unix FIFOs, sockets and devices have zero stat size: reject them before opening could block.
+        if (new FileInfo(path).Length is var length && (length <= 0 || length > maximum))
+            throw new InvalidDataException($"Resource cache file size mismatch or bound exceeded: {path}.");
+        return path;
     }
 
     private static void Verify(string path, string expectedHash, long? expectedBytes = null)
     {
-        using var input = File.OpenRead(path);
-        if (input.Length is <= 0 or > MaxArchiveBytes || expectedBytes != null && input.Length != expectedBytes)
+        var length = new FileInfo(path).Length;
+        if (length is <= 0 or > MaxArchiveBytes || expectedBytes != null && length != expectedBytes)
             throw new InvalidDataException($"Resource file size mismatch or bound exceeded: {path}.");
+        using var input = File.OpenRead(path);
         if (!Convert.ToHexString(SHA256.HashData(input)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException($"Resource SHA-256 mismatch: {path}. Supply matching resources or remove this invalid cache entry.");
     }

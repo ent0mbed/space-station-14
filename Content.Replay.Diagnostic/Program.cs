@@ -58,6 +58,11 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Length == 0)
+        {
+            Console.WriteLine("Usage: ss14-replay inspect|resources|export --input REPLAY.zip [options]. See --help.");
+            return;
+        }
         if (args is ["--help"] or ["-h"])
         {
             Console.WriteLine("""

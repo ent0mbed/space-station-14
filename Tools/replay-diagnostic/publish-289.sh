@@ -31,6 +31,10 @@ mkdir -p "$output_parent"
 output="$(cd -- "$output_parent" && pwd -P)/$(basename -- "$output")"
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$script_dir/prepare-289.sh"
+if [[ -n $(git -C "$source_root" status --porcelain --untracked-files=no) ]]; then
+    printf 'Publish requires a clean tracked source checkout so adapterSourceRevision identifies the shipped source.\n' >&2
+    exit 1
+fi
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/ss14-release.XXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
