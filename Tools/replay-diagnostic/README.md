@@ -24,6 +24,29 @@ the engine's relative resource mount resolves correctly. Help exits without
 opening replay/resources or starting the engine. The worktree remains available
 for reuse and inspection.
 
+`--lighting-observations true` selects diagnostic **0.10** with exact sprite
+presentation. Default exact **0.8** and opt-in visual **0.9** keep their existing
+fields/capabilities; visual plus lighting is rejected before replay/resource access.
+Every 0.10 snapshot chunk/delta includes a complete point/map observation group,
+including explicit empty arrays. Native component removals have owner-ID deletes;
+ambient component removal replaces the map baseline with explicit absence.
+The helper also applies `robust-289.0.3-light-mask-observation.patch`, whose
+read-only accessor exposes the client's actual resolved mask without touching
+renderer state. A declared mask prototype does not substitute for that observation.
+
+Lighting samples run after native frame update, independently of sprites/network
+dirty candidates. All initialized point/map owners and their transform parents are
+retained, including paused, disabled, container-occluded and client-created owners. IDs use
+the scene's existing native `NetEntity.Id` space, including negative client IDs.
+Point RGB is straight sRGB; ambient RGB is native linear. Offsets/radii are meters;
+native mask angles are narrowed to finite float32 radians for this contract.
+Known whole-image masks reference preceding image definitions; body availability
+is separate. Unmapped/generated textures and atlas regions have explicit unavailable
+reasons. The 250000 combined point/map membership limit and 64 MiB live/staged
+lighting accounting are fixed; canonical Go additionally applies its combined
+512 MiB guard. This capability preserves inputs and does not claim lighting
+rendering, roofs, emission, shadows, FOV, sun or AO completeness.
+
 For the verified public three-second fixture, download both original ZIPs:
 
 ```sh

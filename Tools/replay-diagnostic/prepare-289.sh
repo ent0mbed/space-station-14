@@ -23,7 +23,7 @@ if [[ $(git -C "$reader_tree/RobustToolbox" rev-parse HEAD) != "$engine_revision
     printf 'Unexpected engine revision; refusing to run this adapter.\n' >&2
     exit 1
 fi
-reader_patches=("$script_dir/robust-289.0.3.patch" "$script_dir/robust-289.0.3-animation-eligibility.patch" "$script_dir/robust-289.0.3-animation-boundaries.patch")
+reader_patches=("$script_dir/robust-289.0.3.patch" "$script_dir/robust-289.0.3-animation-eligibility.patch" "$script_dir/robust-289.0.3-animation-boundaries.patch" "$script_dir/robust-289.0.3-light-mask-observation.patch")
 # Later patches overlap earlier context. Validate a fully prepared tree by
 # reversing the stack in a temporary index, never in the real source/index.
 reader_patch_paths=()
