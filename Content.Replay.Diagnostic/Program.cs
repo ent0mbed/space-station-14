@@ -12,14 +12,16 @@ internal static class Program
 {
     public const string GameBuild = "94087a918a2fae4571f5a529fe14ef7f5dce29a3";
     public const string EngineVersion = "289.0.3";
-    public const string SceneSchema = "ss14-diagnostic/0.7";
-    public const string SummarySchema = "ss14-diagnostic-summary/0.7";
+    public const string SceneSchema = "ss14-diagnostic/0.8";
+    public const string SummarySchema = "ss14-diagnostic-summary/0.8";
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
     public const string AudioTimingCapability = "native-audio-timing-metadata/1";
     public const string SpriteBoundsCapability = "native-sprite-local-bounds/1";
     public const string TileEdgeCapability = "native-tile-edge-inputs/1";
     public const string FrozenMaterialCapability = "native-frozen-material-snapshots/1";
     public const string PresentationCapability = "native-sprite-presentation-samples/1";
+    // Every shared layer carries the native Blank boolean. Legacy absence means unknown.
+    public const string LayerBlankCapability = "native-sprite-layer-blank/1";
     public const int MaxPresentationOwners = 250_000;
     public const int MaxPresentationLayersPerOwner = 256;
     public const long MaxPresentationRetainedBytes = 64L * 1024 * 1024;
