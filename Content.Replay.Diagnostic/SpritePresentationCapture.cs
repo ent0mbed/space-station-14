@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using Robust.Client.GameObjects;
 using Robust.Client.Graphics;
 
@@ -12,6 +13,15 @@ public sealed partial class CaptureRunner
     private readonly List<(int Id, EntityUid Uid)> _appearanceCandidates = new();
     private readonly LayerPhaseValue[] _phaseScratch = new LayerPhaseValue[Program.MaxPresentationLayersPerOwner];
     private readonly Dictionary<int, RetainedPresentation> _presentationStates = new();
+    private readonly Dictionary<int, PendingPresentation> _pendingPresentation = new();
+    private readonly List<int> _pendingPresentationOrder = new();
+    private readonly HashSet<int> _presentationBaselineOwners = new();
+    private long _pendingPresentationBytes;
+    private long _presentationCombinedPeakBytes;
+    private long _queueOwnerVisits, _queueLayerVisits, _postOwnerVisits, _postLayerVisits;
+    private long _appearanceLayerComparisons, _phaseLayerVisits, _baselineOwnerVisits, _baselineLayerVisits;
+    private long _presentationArraysAllocated, _presentationSerializations;
+    private double _queueMs, _fusedInspectionMs, _appearanceProjectionMs, _baselineDrainMs, _presentationCommitMs, _presentationSerializationMs;
     private readonly List<object> _ordinaryPhaseProbe = new();
     private long _presentationRetainedBytes;
     private long _presentationRetainedPeakBytes;
@@ -24,8 +34,12 @@ public sealed partial class CaptureRunner
 
     private void TrackPresentationOwner(int id, EntityUid uid)
     {
-        if (!_presentationOwners.ContainsKey(id) && _presentationOwners.Count >= Program.MaxPresentationOwners)
-            throw new InvalidDataException("Presentation owner budget exceeded.");
+        if (!_presentationOwners.ContainsKey(id))
+        {
+            if (_presentationOwners.Count >= Program.MaxPresentationOwners)
+                throw new InvalidDataException("Presentation owner budget exceeded.");
+            _presentationBaselineOwners.Add(id);
+        }
         _presentationOwners[id] = uid;
     }
 
@@ -41,21 +55,32 @@ public sealed partial class CaptureRunner
 
     private void QueueOrdinarySprite(EntityUid uid, SpriteComponent component, SpriteSystem system)
     {
+        _queueOwnerVisits++;
         if (_entities.HasComponent<SyncSpriteComponent>(uid)) return;
         var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
         if (layers.Count > Program.MaxPresentationLayersPerOwner)
             throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
         // Do not inspect cached IsInert. Its queued recomputation happens inside FrameUpdate.
         foreach (var layer in layers)
+        {
+            _queueLayerVisits++;
             if (layer.Visible && layer.AutoAnimated && TryPhaseState(component, layer, out _))
             {
                 system.ForceUpdate(uid);
                 _ordinaryForceUpdates++;
                 return;
             }
+        }
     }
 
     private void QueueOrdinaryPhases(Robust.Shared.GameStates.GameState state, bool initial)
+    {
+        var start = Stopwatch.GetTimestamp();
+        QueueOrdinaryPhasesCore(state, initial);
+        _queueMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+    }
+
+    private void QueueOrdinaryPhasesCore(Robust.Shared.GameStates.GameState state, bool initial)
     {
         var system = _entities.System<SpriteSystem>();
         if (initial)
@@ -81,19 +106,61 @@ public sealed partial class CaptureRunner
                 QueueOrdinarySprite(uid.Value, sprite, system);
     }
 
-    private void ProjectIndependentAppearance(List<object> upserts, List<object> audioEvents)
+    private void InspectSpritePresentation(bool inspectAppearance)
     {
+        var start = Stopwatch.GetTimestamp();
         _appearanceCandidates.Clear();
+        _pendingPresentation.Clear();
+        _pendingPresentationOrder.Clear();
+        _pendingPresentationBytes = 0;
         foreach (var (id, uid) in _presentationOwners)
         {
+            _postOwnerVisits++;
             _presentationScalarInspections++;
             if (!_entities.TryGetComponent<MetaDataComponent>(uid, out var metadata)
                 || metadata.EntityLifeStage >= EntityLifeStage.Terminating)
                 throw new InvalidDataException($"Retained presentation owner {id} disappeared without observed deletion.");
-            var hasSprite = _entities.TryGetComponent<SpriteComponent>(uid, out var component);
-            if (hasSprite ? !NativeAppearanceMatches(uid, id, component!) : _previousSprites.ContainsKey(id))
-                _appearanceCandidates.Add((id, uid));
+            if (!_entities.TryGetComponent<SpriteComponent>(uid, out var component))
+            {
+                if (inspectAppearance && _previousSprites.ContainsKey(id)) _appearanceCandidates.Add((id, uid));
+                continue;
+            }
+            var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
+            if (layers.Count > _phaseScratch.Length) throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
+            var spriteId = _previousSprites.GetValueOrDefault(id);
+            var definition = spriteId == 0 ? null : _spriteDefinitions[spriteId - 1];
+            var matches = !inspectAppearance || definition != null
+                && ReadSpriteHead(component, definition.Head.NativeLocalBounds) == definition.Head
+                && layers.Count == definition.Layers.Length;
+            var reason = _entities.HasComponent<SyncSpriteComponent>(uid) ? "native-realtime-sync" : null;
+            var count = 0;
+            for (var index = 0; index < layers.Count; index++)
+            {
+                _postLayerVisits++;
+                var layer = layers[index];
+                if (inspectAppearance && matches)
+                {
+                    _appearanceLayerComparisons++;
+                    if (!TryReadCapturedMaterial(layer.Shader, out var material)
+                        || ReadLayerValue(uid, component, layer, index, layers.Count, material) != definition!.Layers[index])
+                        matches = false;
+                }
+                if (reason == null)
+                {
+                    _phaseLayerVisits++;
+                    ReadPhaseLayer(id, component, layer, index, ref count);
+                }
+            }
+            if (inspectAppearance && matches && !NativePostAppearanceMatches(component, definition!)) matches = false;
+            if (!matches) _appearanceCandidates.Add((id, uid));
+            StagePresentation(id, spriteId, VectorValue.From(component.Offset), reason, count, !matches);
         }
+        _fusedInspectionMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+    }
+
+    private void ProjectPresentationAppearance(List<object> upserts, List<object> audioEvents)
+    {
+        var start = Stopwatch.GetTimestamp();
         // The candidate list is reusable; stable owners never run full CaptureSprite/material/bounds work.
         _appearanceCandidates.Sort((left, right) => left.Id.CompareTo(right.Id));
         foreach (var (_, uid) in _appearanceCandidates)
@@ -101,14 +168,49 @@ public sealed partial class CaptureRunner
             _independentAppearanceCandidates++;
             ProjectNative(uid, upserts, audioEvents, false);
         }
+        _appearanceProjectionMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
     }
 
-    private List<SpritePresentationReplacement> CaptureSpritePresentation(long sampleReplayTime100ns, int sequence)
+    private void ReadPhaseLayer(int id, SpriteComponent component, SpriteComponent.Layer layer, int index, ref int count)
     {
-        var replacements = new List<SpritePresentationReplacement>();
-        long frameBytes = 0;
-        foreach (var (id, uid) in _presentationOwners)
+        if (!TryPhaseState(component, layer, out var state)) return;
+        if (layer.AnimationFrame < 0 || layer.AnimationFrame >= state.DelayCount || !float.IsFinite(layer.AnimationTimeLeft))
+            throw new InvalidDataException($"Invalid native RSI phase on {id}:{index}.");
+        _phaseScratch[count++] = new(index, layer.AnimationFrame, layer.AnimationTimeLeft, layer.AutoAnimated, layer.Reversed);
+    }
+
+    private bool PresentationMatches(int id, int spriteId, VectorValue offset, string? reason, ReadOnlySpan<LayerPhaseValue> layers)
+        => _presentationStates.TryGetValue(id, out var previous) && previous.Value.SpriteId == spriteId
+            && previous.Value.Offset == offset && previous.Value.PhaseUnavailableReason == reason
+            && layers.SequenceEqual(previous.Value.Layers);
+
+    private void StagePresentation(int id, int spriteId, VectorValue offset, string? reason, int count, bool rebind)
+    {
+        if (!float.IsFinite(offset.X) || !float.IsFinite(offset.Y))
+            throw new InvalidDataException($"Nonfinite native sprite offset on {id}.");
+        var layers = _phaseScratch.AsSpan(0, count);
+        if (!rebind && PresentationMatches(id, spriteId, offset, reason, layers)) return;
+        if (_pendingPresentation.ContainsKey(id)) throw new InvalidDataException("Duplicate staged presentation owner.");
+        var bytes = 192 + count * 32;
+        if (_presentationRetainedBytes + _pendingPresentationBytes + bytes > Program.MaxPresentationRetainedBytes)
+            throw new InvalidDataException("Combined live/staged presentation sublimit exceeded.");
+        _pendingPresentation[id] = new(offset, reason, layers.ToArray(), bytes);
+        if (count != 0) _presentationArraysAllocated++;
+        _pendingPresentationOrder.Add(id);
+        _pendingPresentationBytes += bytes;
+        _presentationCombinedPeakBytes = Math.Max(_presentationCombinedPeakBytes, _presentationRetainedBytes + _pendingPresentationBytes);
+    }
+
+    private List<SpritePresentationReplacement> FinishSpritePresentation(long sampleReplayTime100ns, int sequence)
+    {
+        var start = Stopwatch.GetTimestamp();
+        // ProjectNative/parent closure may add owners or rebind IDs after the map walk.
+        // Already-staged owners keep their immutable scalars; projection does not advance native phase.
+        foreach (var id in _presentationBaselineOwners)
         {
+            _baselineOwnerVisits++;
+            if (_pendingPresentation.ContainsKey(id)) continue;
+            if (!_presentationOwners.TryGetValue(id, out var uid)) continue;
             if (!_previousSprites.TryGetValue(id, out var spriteId)
                 || !_entities.TryGetComponent<SpriteComponent>(uid, out var component)) continue;
             var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
@@ -119,19 +221,31 @@ public sealed partial class CaptureRunner
             var count = 0;
             for (var index = 0; reason == null && index < layers.Count; index++)
             {
-                var layer = layers[index];
-                if (!TryPhaseState(component, layer, out var state)) continue;
-                if (layer.AnimationFrame < 0 || layer.AnimationFrame >= state.DelayCount
-                    || !float.IsFinite(layer.AnimationTimeLeft))
-                    throw new InvalidDataException($"Invalid native RSI phase on {id}:{index}.");
-                _phaseScratch[count++] = new(index, layer.AnimationFrame, layer.AnimationTimeLeft,
-                    layer.AutoAnimated, layer.Reversed);
+                _baselineLayerVisits++;
+                ReadPhaseLayer(id, component, layers[index], index, ref count);
             }
-            if (!TryReplaceSpritePresentation(id, spriteId, sampleReplayTime100ns, offset, reason, count,
-                    out var replacement, out var encodedBytes)) continue;
+            StagePresentation(id, spriteId, offset, reason, count, false);
+        }
+        _presentationBaselineOwners.Clear();
+        _baselineDrainMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        start = Stopwatch.GetTimestamp();
+        var serializationBefore = _presentationSerializationMs;
+        var replacements = new List<SpritePresentationReplacement>(_pendingPresentationOrder.Count);
+        long frameBytes = 0;
+        foreach (var id in _pendingPresentationOrder)
+        {
+            var pending = _pendingPresentation[id];
+            _pendingPresentationBytes -= pending.Bytes;
+            if (!_previousSprites.TryGetValue(id, out var spriteId)) continue;
+            if (!TryReplaceSpritePresentation(id, spriteId, sampleReplayTime100ns, pending.Offset, pending.Reason,
+                    pending.Layers.Length, out var replacement, out var encodedBytes, pending.Layers)) continue;
             replacements.Add(replacement!);
             frameBytes += encodedBytes;
+            _presentationCombinedPeakBytes = Math.Max(_presentationCombinedPeakBytes, _presentationRetainedBytes + _pendingPresentationBytes);
         }
+        _pendingPresentation.Clear();
+        _pendingPresentationOrder.Clear();
+        _presentationCommitMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds - (_presentationSerializationMs - serializationBefore);
         _maximumFramePresentationJSONBytes = Math.Max(_maximumFramePresentationJSONBytes, frameBytes);
         CapturePhaseProbe(sampleReplayTime100ns, sequence);
         return replacements;
@@ -141,13 +255,13 @@ public sealed partial class CaptureRunner
     // Immutable copies are allocated only when identity or actual presentation values change.
     private bool TryReplaceSpritePresentation(int id, int spriteId, long sampleReplayTime100ns,
         VectorValue offset, string? phaseUnavailableReason, int count,
-        out SpritePresentationReplacement? replacement, out int encodedBytes)
+        out SpritePresentationReplacement? replacement, out int encodedBytes, LayerPhaseValue[]? ownedLayers = null)
     {
         if (!float.IsFinite(offset.X) || !float.IsFinite(offset.Y))
             throw new InvalidDataException($"Nonfinite native sprite offset on {id}.");
         if (count < 0 || count > _phaseScratch.Length || sampleReplayTime100ns < 0)
             throw new InvalidDataException("Invalid native presentation sample.");
-        var values = _phaseScratch.AsSpan(0, count);
+        var values = (ownedLayers ?? _phaseScratch).AsSpan(0, count);
         var existed = _presentationStates.TryGetValue(id, out var previous);
         replacement = null;
         encodedBytes = 0;
@@ -156,12 +270,15 @@ public sealed partial class CaptureRunner
             && values.SequenceEqual(previous.Value.Layers)) return false; // timestamp alone never dirties presentation
         if (!existed && _presentationStates.Count >= Program.MaxPresentationOwners)
             throw new InvalidDataException("Retained presentation owner budget exceeded.");
-        replacement = new(id, spriteId, sampleReplayTime100ns, offset, phaseUnavailableReason, values.ToArray());
+        replacement = new(id, spriteId, sampleReplayTime100ns, offset, phaseUnavailableReason, ownedLayers ?? values.ToArray());
+        var serializationStart = Stopwatch.GetTimestamp();
         encodedBytes = JsonSerializer.SerializeToUtf8Bytes(replacement, Json).Length;
+        _presentationSerializationMs += Stopwatch.GetElapsedTime(serializationStart).TotalMilliseconds;
+        _presentationSerializations++;
         // Includes empty-phase owners and conservative owned record/array/dictionary overhead.
         var retainedBytes = Math.Max(encodedBytes, 192 + count * 32);
         var next = _presentationRetainedBytes - (existed ? previous.Bytes : 0) + retainedBytes;
-        if (next > Program.MaxPresentationRetainedBytes)
+        if (next + _pendingPresentationBytes > Program.MaxPresentationRetainedBytes)
             throw new InvalidDataException("Retained presentation sublimit exceeded.");
         _presentationRetainedBytes = next;
         _presentationRetainedPeakBytes = Math.Max(_presentationRetainedPeakBytes, next);
@@ -207,4 +324,5 @@ public sealed partial class CaptureRunner
     private readonly record struct LayerPhaseValue(int Index, int AnimationFrame, float AnimationTimeLeft,
         bool AutoAnimated, bool Reversed);
     private readonly record struct RetainedPresentation(SpritePresentationReplacement Value, int Bytes);
+    private sealed record PendingPresentation(VectorValue Offset, string? Reason, LayerPhaseValue[] Layers, int Bytes);
 }

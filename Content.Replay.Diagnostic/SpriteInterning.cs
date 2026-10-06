@@ -128,21 +128,9 @@ public sealed partial class CaptureRunner
             component.Rotation.Theta, component.NoRotation, component.SnapCardinals, component.EnableDirectionOverride,
             EnumName(component.DirectionOverride), component.GranularLayersRendering, component.Loop, bounds);
 
-    // Compare reusable native scalars against shared phase-free values. No bounds query,
-    // material/source serialization, arrays or dictionary interning on a stable owner.
-    private bool NativeAppearanceMatches(EntityUid uid, int id, SpriteComponent component)
+    // Tail of the fused scalar inspection, after its shared layer/phase walk.
+    private bool NativePostAppearanceMatches(SpriteComponent component, SpriteDefinition definition)
     {
-        if (!_previousSprites.TryGetValue(id, out var spriteId)) return false;
-        var definition = _spriteDefinitions[spriteId - 1];
-        if (ReadSpriteHead(component, definition.Head.NativeLocalBounds) != definition.Head) return false;
-        var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
-        if (layers.Count != definition.Layers.Length) return false;
-        for (var index = 0; index < layers.Count; index++)
-        {
-            if (!TryReadCapturedMaterial(layers[index].Shader, out var material)
-                || ReadLayerValue(uid, component, layers[index], index, layers.Count, material) != definition.Layers[index])
-                return false;
-        }
         var posts = _entities.System<SpriteSystem>().GetPostShaders(component);
         if (posts.Count != definition.Posts.Length) return false;
         for (var index = 0; index < posts.Count; index++)
