@@ -61,6 +61,9 @@ public sealed partial class CaptureRunner
     public async Task RunAsync()
     {
         _captureTransformSystem = null;
+        ResetAnimationEligibility();
+        _entities.BeforeEntityFlush += ResetAnimationEligibility;
+        _playback.ReplayCheckpointReset += ResetAnimationEligibility;
         _resources.OnRawTextureLoaded += OnTexture;
         try
         {
@@ -74,6 +77,9 @@ public sealed partial class CaptureRunner
                 transformSystem.OnGlobalMoveEvent -= OnNativeMove;
             _captureTransformSystem = null;
             _entities.EntityDeleted -= OnNativeDelete;
+            _entities.BeforeEntityFlush -= ResetAnimationEligibility;
+            _playback.ReplayCheckpointReset -= ResetAnimationEligibility;
+            ResetAnimationEligibility();
             if (_playback.Replay != null)
                 _playback.StopReplay();
         }

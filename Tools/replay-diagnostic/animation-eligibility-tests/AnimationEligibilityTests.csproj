@@ -1,0 +1,27 @@
+<Project>
+  <PropertyGroup>
+    <ImportDirectoryPackagesProps>false</ImportDirectoryPackagesProps>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Use the pinned engine's existing friend access for small native fixtures. -->
+    <AssemblyName>Robust.Client.Tests</AssemblyName>
+    <NoWarn>CS0618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Robust.Client" HintPath="$(ReaderBinaries)/Robust.Client.dll" />
+    <Reference Include="Robust.Shared" HintPath="$(ReaderBinaries)/Robust.Shared.dll" />
+    <Reference Include="Robust.Shared.Maths" HintPath="$(ReaderBinaries)/Robust.Shared.Maths.dll" />
+    <Reference Include="Content.Replay.Diagnostic" HintPath="$(ReaderBinaries)/Content.Replay.Diagnostic.dll" />
+    <Compile Include="../../../Content.Replay.Diagnostic/AnimationEligibility.cs" Link="AnimationEligibility.cs" />
+  </ItemGroup>
+  <Target Name="RequireReaderBinaries" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(ReaderBinaries)/Content.Replay.Diagnostic.dll')" Text="Set ReaderBinaries to the compiled patched 289.0.3 reader directory." />
+  </Target>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+</Project>

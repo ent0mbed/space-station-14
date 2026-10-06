@@ -23,10 +23,12 @@ if [[ $(git -C "$reader_tree/RobustToolbox" rev-parse HEAD) != "$engine_revision
     printf 'Unexpected engine revision; refusing to run this adapter.\n' >&2
     exit 1
 fi
-if ! git -C "$reader_tree/RobustToolbox" apply --reverse --check "$script_dir/robust-289.0.3.patch" >/dev/null 2>&1; then
-    git -C "$reader_tree/RobustToolbox" apply --check "$script_dir/robust-289.0.3.patch"
-    git -C "$reader_tree/RobustToolbox" apply "$script_dir/robust-289.0.3.patch"
-fi
+for reader_patch in robust-289.0.3.patch robust-289.0.3-animation-eligibility.patch; do
+    if ! git -C "$reader_tree/RobustToolbox" apply --reverse --check "$script_dir/$reader_patch" >/dev/null 2>&1; then
+        git -C "$reader_tree/RobustToolbox" apply --check "$script_dir/$reader_patch"
+        git -C "$reader_tree/RobustToolbox" apply "$script_dir/$reader_patch"
+    fi
+done
 mkdir -p "$reader_tree/Content.Replay.Diagnostic"
 cp "$source_root/Content.Replay.Diagnostic/"*.cs \
     "$source_root/Content.Replay.Diagnostic/"*.csproj \
