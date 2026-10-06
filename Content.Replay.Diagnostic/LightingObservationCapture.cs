@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Robust.Client.GameObjects;
 using Robust.Client.Graphics;
 using Robust.Shared.Map.Components;
@@ -53,6 +52,8 @@ public sealed partial class CaptureRunner
             else actualMask = new("unavailable", Reason: mask is AtlasTexture
                 ? "Resolved native mask is an atlas region; whole-image binding is unavailable."
                 : "Resolved native mask has no loaded image resource path.");
+            // Native Angle.Theta is double; the observation contract explicitly narrows
+            // radians to float32, with finite-value validation in Observe.
             _lighting.Observe(new PointLightObservation(metadata.NetEntity.Id, mapId,
                 light.Enabled, light.ContainerOccluded, LightingColorValue(light.Color),
                 new(light.Offset.X, light.Offset.Y), light.Energy, light.Radius, light.Softness,
@@ -140,16 +141,8 @@ public sealed partial class CaptureRunner
             unavailable = _lighting.Points.Count(value => value.ActualMask.Kind == "unavailable") },
         retainedBytes = _lighting.RetainedBytes, peakLiveStagedBytes = _lighting.PeakLiveStagedBytes,
         limits = new { owners = LightingObservationPolicy.MaxOwners, retainedBytes = LightingObservationPolicy.MaxRetainedBytes },
-        accounting = "Owned JSON value bytes plus 256 per point/192 per map, live and pending values, 64 per sampled projection, 16 per removal. Canonical Go also applies its combined 512 MiB guard.",
+        accounting = "Owned JSON value bytes plus 256 per point/192 per map, live and pending values, 64 per sampled projection, 16 per removal. This is not an all-allocation/process cap; temporary frame serialization uses the existing 64 MiB record/1 GiB scene output guards. Canonical Go also applies its combined 512 MiB guard.",
         unavailable = new[] { "lighting-rendering", "roofs", "tile-emission", "point-shadows", "eye-fov", "sun", "ambient-occlusion" }
     };
 
-    // Old profiles use their original serializer path and omit the new group entirely.
-    private static object WithLighting<T>(T record, string name, object lighting)
-    {
-        var fields = JsonSerializer.SerializeToElement(record, Json).EnumerateObject()
-            .ToDictionary(property => property.Name, property => property.Value);
-        fields.Add(name, JsonSerializer.SerializeToElement(lighting, Json));
-        return fields;
-    }
 }

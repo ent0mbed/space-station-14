@@ -62,7 +62,8 @@ Check(LightingObservationPolicy.Parse(exact, "true")
 Reject(() => LightingObservationPolicy.Parse(visual, "true"), "Visual plus lighting must fail before engine startup.");
 Reject(() => LightingObservationPolicy.Parse(exact, "yes"), "Malformed opt-in must fail.");
 
-var point = new PointLightObservation(-3, 4, false, true, new(0, 0.5f, 1, 0), new(0, -1),
+const int clientOwnerId = (1 << 30) | 3;
+var point = new PointLightObservation(clientOwnerId, 4, false, true, new(0, 0.5f, 1, 0), new(0, -1),
     0, 5, 1, 6.8f, 0, false, 0, false, "cone", new("none"));
 var map = new MapLightingObservation(4, false, false, null);
 var inventory = new LightingObservationInventory();
@@ -86,13 +87,16 @@ Check(absent.MapReplacements.Single() == map && absent.PointReplacements.Single(
     "Ambient removal and unavailable actual mask must remain distinct from zero/none.");
 inventory.Begin();
 var removed = inventory.Finish();
-Check(removed.PointDeletes.SequenceEqual([-3]) && removed.MapDeletes.SequenceEqual([4])
+Check(removed.PointDeletes.SequenceEqual([clientOwnerId]) && removed.MapDeletes.SequenceEqual([4])
     && inventory.RetainedBytes == 0, "Component/owner disappearance needs explicit removals and released owned values.");
 inventory.Begin(); inventory.Observe(point);
 Check(inventory.Finish().PointReplacements.Single() == point, "A returning owner needs its full baseline.");
 Reject(() => LightingObservationInventory.Validate(point with { Energy = float.NaN }), "Nonfinite native scalar was accepted.");
 Reject(() => LightingObservationInventory.Validate(point with { ColorSrgb = new(0, 0, 0, float.PositiveInfinity) }), "Nonfinite color was accepted.");
 Reject(() => LightingObservationInventory.Validate(point with { OwnerId = 0 }), "Zero entity identity was accepted.");
+Reject(() => LightingObservationInventory.Validate(point with { OwnerId = -3 }), "Negative native network owner identity was accepted.");
+Reject(() => LightingObservationInventory.Validate(point with { MapEntityId = -4 }), "Negative native network map reference was accepted.");
+Reject(() => inventory.Observe(map with { OwnerId = -4 }), "Negative native network map identity was accepted.");
 Reject(() => LightingObservationInventory.Validate(point with { ActualMask = new("none", 2) }), "Conflicting mask fields were accepted.");
 Reject(() => LightingObservationInventory.Validate(point with { ActualMask = new("image", 0) }), "Invalid image identity was accepted.");
 Reject(() => LightingObservationInventory.Validate(point with { ActualMask = new("unavailable", Reason: "") }), "Empty unavailable reason was accepted.");
@@ -116,6 +120,6 @@ using var mapJson = JsonDocument.Parse(JsonSerializer.Serialize(map, json));
 Check(mapJson.RootElement.GetProperty("ambientLinear").ValueKind == JsonValueKind.Null
     && !mapJson.RootElement.GetProperty("ambientPresent").GetBoolean(), "Missing ambient must remain explicitly absent.");
 var many = new LightingChanges(true, Enumerable.Range(1, 1001).Select(id => point with { OwnerId = id }).ToList(), [], [map], []);
-Check(many.Chunk(0, true).PointReplacements.Count == 1000 && many.Chunk(1, true).PointReplacements.Count == 1
-    && many.Chunk(1, true).MapReplacements.Count == 0 && many.Chunk(1, true).Complete, "Initial chunks must collectively preserve complete lighting membership.");
+Check(many.Chunk(0, true).PointReplacements.Count() == 1000 && many.Chunk(1, true).PointReplacements.Count() == 1
+    && !many.Chunk(1, true).MapReplacements.Any() && many.Chunk(1, true).Complete, "Initial chunks must collectively preserve complete lighting membership.");
 Console.WriteLine($"Presentation and lighting policy/lifetime/shape/budget checks passed: {checks}. No engine or replay started.");

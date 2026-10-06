@@ -274,7 +274,13 @@ public sealed partial class CaptureRunner
                     upserts = index == 0 ? upserts.Skip(chunk * 1000).Take(1000) : upserts,
                     deletes, audioEvents = chunk == 0 ? audioEvents : [],
                     spritePresentationReplacements = index == 0 ? spritePresentationReplacements.Skip(chunk * 1000).Take(1000) : spritePresentationReplacements };
-                Write(lighting != null ? WithLighting(frame, "lighting", lighting.Chunk(chunk, index == 0)) : (object) frame);
+                if (lighting != null)
+                    Write(new { frame.kind, frame.sequence, frame.chunkIndex, frame.chunkCount,
+                        frame.sourceTick, frame.sourceTime100ns, frame.sourceServerTime100ns,
+                        frame.upserts, frame.deletes, frame.audioEvents, frame.spritePresentationReplacements,
+                        lighting = lighting.Chunk(chunk, index == 0) });
+                else
+                    Write(frame);
             }
             tileCapture?.Capture(index, state.ToSequence.Value, data.ReplayTime[index].Ticks);
         }
@@ -364,7 +370,17 @@ public sealed partial class CaptureRunner
                 total = Enumerable.Range(0, 3).Select(gen => GC.CollectionCount(gen) - Program.CollectionsAtStart[gen]).ToArray() },
             managedBytes = GC.GetTotalMemory(false), peakWorkingSetBytes = Process.GetCurrentProcess().PeakWorkingSet64,
             outputBytes = output.Length, diagnosticOnly = true };
-        var success = Program.CaptureLighting ? WithLighting(summary, "lighting", LightingSummary()) : (object) summary;
+        var success = Program.CaptureLighting ? (object) new {
+            summary.schema, summary.clipProfile, summary.requestedSeconds, summary.clipLimits,
+            summary.requiredCapabilities, summary.gameBuild, summary.engineVersion, summary.frames,
+            summary.blocksRead, summary.playbackBlocksRead, summary.declaredDecodedBytes, summary.simulatedSeconds,
+            summary.initialEntities, summary.entitiesAtEnd, summary.initialSprites, summary.initialLayers,
+            summary.shaderLayers, summary.totalUpserts, summary.audio, summary.materials, summary.stagesMilliseconds,
+            summary.clipLoopSpeed, summary.interning, summary.spritePresentation, summary.presentationInspection,
+            summary.parentClosure, summary.tiles, summary.allocationsBytes, summary.gcCollections,
+            summary.managedBytes, summary.peakWorkingSetBytes, summary.outputBytes, summary.diagnosticOnly,
+            lighting = LightingSummary()
+        } : summary;
         File.WriteAllBytes(Path.Combine(Program.Output, "summary.json"), JsonSerializer.SerializeToUtf8Bytes(success, Json));
         Console.WriteLine(JsonSerializer.Serialize(success, Json));
     }

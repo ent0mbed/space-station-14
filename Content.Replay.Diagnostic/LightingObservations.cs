@@ -18,11 +18,15 @@ internal readonly record struct MapLightingObservation(int OwnerId, bool Lightin
 internal sealed record LightingChanges(bool Complete, List<PointLightObservation> PointReplacements,
     List<int> PointDeletes, List<MapLightingObservation> MapReplacements, List<int> MapDeletes)
 {
-    public LightingChanges Chunk(int index, bool initial) => initial
-        ? new(true, PointReplacements.Skip(index * 1000).Take(1000).ToList(), [],
-            MapReplacements.Skip(index * 1000).Take(1000).ToList(), [])
-        : this;
+    // Views over the owned pending lists are serialized synchronously before Begin
+    // can mutate them. Snapshot chunks do not allocate replacement-list copies.
+    public LightingChunk Chunk(int index, bool initial) => new(Complete,
+        initial ? PointReplacements.Skip(index * 1000).Take(1000) : PointReplacements,
+        PointDeletes, initial ? MapReplacements.Skip(index * 1000).Take(1000) : MapReplacements,
+        MapDeletes);
 }
+internal sealed record LightingChunk(bool Complete, IEnumerable<PointLightObservation> PointReplacements,
+    IReadOnlyList<int> PointDeletes, IEnumerable<MapLightingObservation> MapReplacements, IReadOnlyList<int> MapDeletes);
 
 // Own only the latest native observations, plus this frame's pending changes.
 // Comparisons include every scalar and resolved mask identity, independent of sprites/network dirtiness.
@@ -80,7 +84,7 @@ internal sealed class LightingObservationInventory
 
     public void Observe(MapLightingObservation value)
     {
-        if (value.OwnerId == 0 || value.AmbientPresent != value.AmbientLinear.HasValue)
+        if (value.OwnerId <= 0 || value.AmbientPresent != value.AmbientLinear.HasValue)
             throw new InvalidDataException("Invalid native map lighting observation.");
         if (value.AmbientLinear is { } color) Validate(color);
         See(value.OwnerId, _mapSeen);
@@ -126,7 +130,7 @@ internal sealed class LightingObservationInventory
 
     internal static void Validate(PointLightObservation value)
     {
-        if (value.OwnerId == 0 || value.MapEntityId == 0)
+        if (value.OwnerId <= 0 || value.MapEntityId is <= 0)
             throw new InvalidDataException("Invalid native point lighting identity.");
         Validate(value.ColorSrgb);
         if (!float.IsFinite(value.Offset.X) || !float.IsFinite(value.Offset.Y)
