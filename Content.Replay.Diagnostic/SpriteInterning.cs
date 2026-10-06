@@ -39,6 +39,7 @@ public sealed partial class CaptureRunner
             if (initial && (shader != null || layer.Shader != null))
                 _shaderLayers++;
             var texturePath = ResolveTexture(layer.Texture);
+            var material = CaptureMaterial(layer.Shader);
             if (texturePath != null)
                 EnsureResource("image", texturePath, BodyMetadata);
             _layerScratch[index] = new LayerValue(index, layer.Visible,
@@ -46,9 +47,10 @@ public sealed partial class CaptureRunner
                 layer.Rotation.Theta, rsi?.Path.ToString(), layer.State.Name, texturePath,
                 layer.AnimationFrame, layer.AnimationTimeLeft, layer.AutoAnimated, layer.Loop, layer.Cycle,
                 layer.Reversed, EnumName(layer.DirOffset), EnumName(layer.RenderingStrategy), shader,
-                layer.Shader != null, layer.Shader?.Mutable, layer.Shader != null,
+                layer.Shader != null, layer.Shader?.Mutable, material.ParametersUnavailable,
                 layer.CopyToShaderParameters != null,
-                CaptureShaderCopy((uid, component), layer.CopyToShaderParameters, nativeLayers.Count));
+                CaptureShaderCopy((uid, component), layer.CopyToShaderParameters, nativeLayers.Count),
+                material.MaterialId, material.UnavailableReason);
         }
         var spriteSystem = _entities.System<SpriteSystem>();
         var nativePosts = spriteSystem.GetPostShaders(component);
@@ -57,8 +59,12 @@ public sealed partial class CaptureRunner
         for (var index = 0; index < nativePosts.Count; index++)
         {
             var post = nativePosts[index];
+            var material = CaptureMaterial(post.Shader);
             _postScratch[index] = new PostShaderValue(post.Id, post.Shader != null,
-                post.GetScreenTexture, post.RaiseShaderEvent, true);
+                post.GetScreenTexture, post.RaiseShaderEvent,
+                material.ParametersUnavailable || post.GetScreenTexture || post.RaiseShaderEvent,
+                material.MaterialId, post.GetScreenTexture || post.RaiseShaderEvent
+                    ? "render-only-inputs-not-captured" : material.UnavailableReason);
         }
         if (initial)
         {
@@ -171,10 +177,10 @@ public sealed partial class CaptureRunner
         int AnimationFrame, float AnimationTimeLeft, bool AutoAnimated, bool Loop, bool Cycle, bool Reversed,
         string DirectionOffset, string RenderingStrategy, string? ShaderPrototype, bool HasShader,
         bool? MaterialMutable, bool ShaderParametersUnavailable, bool CopyToShader,
-        ShaderCopyBinding? CopyToShaderBinding);
+        ShaderCopyBinding? CopyToShaderBinding, int? MaterialId, string? MaterialUnavailableReason);
 
     private readonly record struct PostShaderValue(string Id, bool HasShader, bool GetScreenTexture,
-        bool RaiseShaderEvent, bool ShaderParametersUnavailable);
+        bool RaiseShaderEvent, bool ShaderParametersUnavailable, int? MaterialId, string? MaterialUnavailableReason);
 
     private readonly record struct VectorValue(float X, float Y)
     {

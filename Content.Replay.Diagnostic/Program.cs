@@ -12,15 +12,25 @@ internal static class Program
 {
     public const string GameBuild = "94087a918a2fae4571f5a529fe14ef7f5dce29a3";
     public const string EngineVersion = "289.0.3";
-    public const string SceneSchema = "ss14-diagnostic/0.5";
-    public const string SummarySchema = "ss14-diagnostic-summary/0.5";
+    public const string SceneSchema = "ss14-diagnostic/0.6";
+    public const string SummarySchema = "ss14-diagnostic-summary/0.6";
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
     public const string AudioTimingCapability = "native-audio-timing-metadata/1";
     public const string SpriteBoundsCapability = "native-sprite-local-bounds/1";
     public const string TileEdgeCapability = "native-tile-edge-inputs/1";
+    public const string FrozenMaterialCapability = "native-frozen-material-snapshots/1";
     public const int MaxShaderParameterNameCharacters = 256;
+    public const int MaxShaderParameters = 256;
+    public const int MaxMaterialDefinitions = 4096;
+    public const int MaxMaterialDefinitionBytes = 16 * 1024 * 1024;
+    public const int MaxShaderSourceDefinitions = 512;
+    public const int MaxShaderSourceDefinitionBytes = 8 * 1024 * 1024;
+    public const int MaxShaderIncludes = 32;
+    public const int MaxShaderSourceFileBytes = 1024 * 1024;
+    public const int MaxShaderClosureBytes = 8 * 1024 * 1024;
     public static readonly Stopwatch Total = Stopwatch.StartNew();
     public static string Input = "";
+    public static string Resources = "";
     public static string Output = "";
     public static double Seconds = 10;
     public static ReplayClipProfile Profile = ReplayClipProfile.TenSecond;
@@ -56,7 +66,7 @@ internal static class Program
             }
             Input = Path.GetFullPath(values["--input"]);
             Output = Path.GetFullPath(values["--output"]);
-            var resources = Path.GetFullPath(values["--resources"]);
+            var resources = Resources = Path.GetFullPath(values["--resources"]);
             if (values.TryGetValue("--profile", out var profile))
                 Profile = profile switch
                 {
