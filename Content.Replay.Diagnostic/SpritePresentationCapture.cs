@@ -18,7 +18,7 @@ public sealed partial class CaptureRunner
     private readonly HashSet<int> _presentationBaselineOwners = new();
     private long _pendingPresentationBytes;
     private long _presentationCombinedPeakBytes;
-    private long _queueOwnerVisits, _queueLayerVisits, _postOwnerVisits, _postLayerVisits;
+    private long _queueOwnerVisits, _postOwnerVisits, _postLayerVisits;
     private long _appearanceLayerComparisons, _phaseLayerVisits, _baselineOwnerVisits, _baselineLayerVisits;
     private long _presentationArraysAllocated, _presentationSerializations;
     private double _queueMs, _fusedInspectionMs, _appearanceProjectionMs, _baselineDrainMs, _presentationCommitMs, _presentationSerializationMs;
@@ -29,6 +29,7 @@ public sealed partial class CaptureRunner
     private long _presentationLayerSamples;
     private long _presentationScalarInspections;
     private long _ordinaryForceUpdates;
+    private int _ordinaryQueueRequestsThisStep;
     private long _independentAppearanceCandidates;
     private long _maximumFramePresentationJSONBytes;
 
@@ -60,17 +61,12 @@ public sealed partial class CaptureRunner
         var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
         if (layers.Count > Program.MaxPresentationLayersPerOwner)
             throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
-        // Do not inspect cached IsInert. Its queued recomputation happens inside FrameUpdate.
-        foreach (var layer in layers)
-        {
-            _queueLayerVisits++;
-            if (layer.Visible && layer.AutoAnimated && TryPhaseState(component, layer, out _))
-            {
-                system.ForceUpdate(uid);
-                _ordinaryForceUpdates++;
-                return;
-            }
-        }
+        // ForceUpdate only queues the UID. Native FrameUpdate drains pending inert updates
+        // before applying its paused/inert and per-layer animation gates.
+        if (++_ordinaryQueueRequestsThisStep > Program.MaxPresentationOwners)
+            throw new InvalidDataException("Ordinary sprite frame queue owner budget exceeded.");
+        system.ForceUpdate(uid);
+        _ordinaryForceUpdates++;
     }
 
     private void QueueOrdinaryPhases(Robust.Shared.GameStates.GameState state, bool initial)
@@ -82,6 +78,7 @@ public sealed partial class CaptureRunner
 
     private void QueueOrdinaryPhasesCore(Robust.Shared.GameStates.GameState state, bool initial)
     {
+        _ordinaryQueueRequestsThisStep = 0;
         var system = _entities.System<SpriteSystem>();
         if (initial)
         {

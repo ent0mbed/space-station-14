@@ -44,6 +44,7 @@ public sealed partial class CaptureRunner
     private readonly Dictionary<string, int> _audioStateTypes = new();
     private FileStream _output = default!;
     private double _projectionMs;
+    private double _nativeFrameUpdateMs;
     private double _outputMs;
     private int _upserts;
     private int _layers;
@@ -57,6 +58,13 @@ public sealed partial class CaptureRunner
     private long _sourceClockOrigin;
     private long _projectionAllocatedBytes;
     private SharedTransformSystem? _captureTransformSystem;
+
+    private void RunNativeFrameUpdate(float delta)
+    {
+        var start = Stopwatch.GetTimestamp();
+        _entities.FrameUpdate(delta);
+        _nativeFrameUpdateMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+    }
 
     public async Task RunAsync()
     {
@@ -188,12 +196,12 @@ public sealed partial class CaptureRunner
                 var delta = (float) (data.ReplayTime[index] - data.ReplayTime[index - 1]).TotalSeconds;
                 _entities.TickUpdate(delta, noPredictions: true);
                 QueueOrdinaryPhases(state, false);
-                _entities.FrameUpdate(delta);
+                RunNativeFrameUpdate(delta);
             }
             else
             {
                 QueueOrdinaryPhases(state, true);
-                _entities.FrameUpdate(0);
+                RunNativeFrameUpdate(0);
             }
             applyMs += Stopwatch.GetElapsedTime(stepStart).TotalMilliseconds;
 
@@ -305,7 +313,7 @@ public sealed partial class CaptureRunner
                 loadAndCheckpoint = loadMs, zipZstdNativeRead = native.ReadMilliseconds,
                 playbackZipZstdNativeRead = native.PlaybackReadMilliseconds,
                 entityInitialization = initializeMs, resourceIndex = resourceIndexMs,
-                stateMessagesTickAndPresentation = applyMs, projection = _projectionMs,
+                stateMessagesTickAndPresentation = applyMs, nativeFrameUpdate = _nativeFrameUpdateMs, projection = _projectionMs,
                 resourceInventory = inventoryMs, output = _outputMs, clipLoop = simulation.Elapsed.TotalMilliseconds,
                 total = Program.Total.Elapsed.TotalMilliseconds },
             clipLoopSpeed = data.ReplayTime[^1].TotalSeconds / simulation.Elapsed.TotalSeconds,
@@ -319,7 +327,7 @@ public sealed partial class CaptureRunner
                 peakRetainedBytes = _presentationRetainedPeakBytes, maximumFramePresentationJSONBytes = _maximumFramePresentationJSONBytes,
                 retainedOwners = _presentationStates.Count, assertion = _ordinaryPhaseProbe },
             presentationInspection = new {
-                queue = new { ownerVisits = _queueOwnerVisits, layerVisits = _queueLayerVisits, milliseconds = _queueMs },
+                queue = new { ownerVisits = _queueOwnerVisits, layerVisits = 0L, milliseconds = _queueMs },
                 fused = new { ownerVisits = _postOwnerVisits, layerVisits = _postLayerVisits, milliseconds = _fusedInspectionMs },
                 appearance = new { layerComparisons = _appearanceLayerComparisons, projectionMilliseconds = _appearanceProjectionMs },
                 phase = new { layerVisits = _phaseLayerVisits, baselineOwnerVisits = _baselineOwnerVisits,
@@ -328,7 +336,7 @@ public sealed partial class CaptureRunner
                 commitMillisecondsExcludingSerialization = _presentationCommitMs,
                 serialization = new { values = _presentationSerializations, milliseconds = _presentationSerializationMs },
                 combinedLiveStagedPeakBytes = _presentationCombinedPeakBytes,
-                timingMeaning = "Queue, fused inspection, candidate projection, baseline drain, commit excluding serialization, and serialization are disjoint. Appearance comparisons and phase collection share the fused interval; do not count it twice. These intervals are nested in existing apply/projection totals." },
+                timingMeaning = "Queue, fused inspection, candidate projection, baseline drain, commit excluding serialization, and serialization are disjoint. Appearance comparisons and phase collection share the fused interval; do not count it twice. These intervals are nested in existing apply/projection totals. NativeFrameUpdate measures all client frame systems and is nested in stateMessagesTickAndPresentation. ForcedUpdates counts ordinary queue requests, including sprites later skipped by native paused/inert gates." },
             parentClosure = new { ancestorCandidates = _ancestorCandidates, ancestorAdditions = _ancestorAdditions,
                 clientAncestors = _clientAncestors, movedCandidates = _movedCandidates,
                 observedNativeDeletions = _observedDeletions, maximumDepth = _maxParentDepth,
