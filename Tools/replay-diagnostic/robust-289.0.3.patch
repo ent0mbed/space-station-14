@@ -536,19 +536,13 @@ index 88a9c7458..f27f3ae91 100644
 +}
 
 diff --git a/Robust.Client/ResourceManagement/ResourceCache.Preload.cs b/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
-index c02568180..487ffb3e0 100644
+index c02568180..06ee5df2f 100644
 --- a/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
 +++ b/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
-@@ -1,4 +1,4 @@
--using System;
-+﻿using System;
- using System.Collections.Generic;
- using System.Diagnostics;
- using System.Linq;
 @@ -282,14 +282,10 @@ namespace Robust.Client.ResourceManagement
              // The array must be sorted from biggest to smallest first.
              atlasList.Sort((b, a) => rsiList[a].AtlasSheet.Height.CompareTo(rsiList[b].AtlasSheet.Height));
- 
+
 -            #if FULL_RELEASE
 -            var maxSize = Math.Min(GL.GetInteger(GetPName.MaxTextureSize), _configurationManager.GetCVar(CVars.ResRSIAtlasSize));
 -            #else
@@ -558,6 +552,6 @@ index c02568180..487ffb3e0 100644
              if (_clyde is not ClydeHeadless)
                  maxSize = Math.Min(GL.GetInteger(GetPName.MaxTextureSize), _configurationManager.GetCVar(CVars.ResRSIAtlasSize));
 -            #endif
- 
+
              // THIS IS NOT GUARANTEED TO HAVE ANY PARTICULARLY LOGICAL ORDERING.
              // E.G you could have atlas 1 RSIs appear *before* you're done seeing atlas 2 RSIs.
