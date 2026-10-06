@@ -131,7 +131,7 @@ public sealed partial class CaptureRunner
         _output = output;
         Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.LayerPhaseCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
             spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
@@ -140,6 +140,7 @@ public sealed partial class CaptureRunner
                 tickPeriod100ns = TimeSpan.TicksPerSecond / sourceTickRate },
             scope = new { gameBuild = Program.GameBuild, forkId = Program.ForkId,
                 bundleSha256 = Program.ResourceBundleSha256, roundId, sourceStartTick = data.TickOffset.Value },
+            phaseLimits = new { owners = Program.MaxPhaseOwners, layersPerOwner = Program.MaxPhaseLayersPerOwner, retainedBytes = Program.MaxPhaseRetainedBytes },
             dictionaryLimits = new { spriteDefinitions = Program.MaxSpriteDefinitions,
                 spriteDefinitionBytes = Program.MaxSpriteDefinitionBytes, resourceDefinitions = Program.MaxResourceDefinitions,
                 shaderParameterNameCharacters = Program.MaxShaderParameterNameCharacters,
@@ -186,10 +187,14 @@ public sealed partial class CaptureRunner
                 _timing.CurTick += 1;
                 var delta = (float) (data.ReplayTime[index] - data.ReplayTime[index - 1]).TotalSeconds;
                 _entities.TickUpdate(delta, noPredictions: true);
+                QueueOrdinaryPhases(state, false);
                 _entities.FrameUpdate(delta);
             }
             else
+            {
+                QueueOrdinaryPhases(state, true);
                 _entities.FrameUpdate(0);
+            }
             applyMs += Stopwatch.GetElapsedTime(stepStart).TotalMilliseconds;
 
             var projectionStart = Stopwatch.GetTimestamp();
@@ -228,7 +233,9 @@ public sealed partial class CaptureRunner
                     ProjectNative(uid.Value, upserts, audioEvents, false);
                 }
             }
+            if (index > 0) ProjectIndependentAppearance(upserts, audioEvents);
             ProjectMoved(upserts, audioEvents, index == 0);
+            var spritePhaseReplacements = CaptureLayerPhases(data.ReplayTime[index].Ticks, index);
             if (index == 0)
                 _initialEntities = upserts.Count;
             _projectionMs += Stopwatch.GetElapsedTime(projectionStart).TotalMilliseconds;
@@ -238,14 +245,15 @@ public sealed partial class CaptureRunner
             WriteShaderDefinitions();
             WriteSpriteDefinitions();
             // The initial native world is large. Keep JSONL records bounded without dropping entities.
-            var chunkCount = index == 0 ? (upserts.Count + 999) / 1000 : 1;
+            var chunkCount = index == 0 ? Math.Max((upserts.Count + 999) / 1000, (spritePhaseReplacements.Count + 999) / 1000) : 1;
             for (var chunk = 0; chunk < chunkCount; chunk++)
                 Write(new { kind = index == 0 ? "snapshot" : "delta", sequence = index,
                     chunkIndex = chunk, chunkCount,
                     sourceTick = state.ToSequence.Value, sourceTime100ns = data.ReplayTime[index].Ticks,
                     sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
                     upserts = index == 0 ? upserts.Skip(chunk * 1000).Take(1000) : upserts,
-                    deletes, audioEvents = chunk == 0 ? audioEvents : [] });
+                    deletes, audioEvents = chunk == 0 ? audioEvents : [],
+                    spritePhaseReplacements = index == 0 ? spritePhaseReplacements.Skip(chunk * 1000).Take(1000) : spritePhaseReplacements });
             tileCapture?.Capture(index, state.ToSequence.Value, data.ReplayTime[index].Ticks);
         }
         simulation.Stop();
@@ -280,7 +288,7 @@ public sealed partial class CaptureRunner
 
         var summary = new { schema = Program.SummarySchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.LayerPhaseCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
@@ -304,6 +312,11 @@ public sealed partial class CaptureRunner
                 spriteDefinitionBytes = _spriteDefinitionBytes, previousSpriteReuses = _previousSpriteReuses,
                 sharedSpriteReuses = _sharedSpriteReuses, resourceDefinitions = _resourceDefinitions.Count,
                 uniqueRsiObjectsReferenced = _rsiResourceIds.Count },
+            animationPhases = new { replacements = _phaseReplacements, layerSamples = _phaseLayerSamples,
+                scalarOwnerInspections = _phaseScalarInspections, forcedUpdates = _phaseForceUpdates,
+                independentAppearanceCandidates = _independentAppearanceCandidates, retainedBytes = _phaseRetainedBytes,
+                peakRetainedBytes = _phaseRetainedPeakBytes, maximumFramePhaseJSONBytes = _maximumFramePhaseJSONBytes,
+                retainedOwners = _phaseStates.Count, assertion = _phaseProbe },
             parentClosure = new { ancestorCandidates = _ancestorCandidates, ancestorAdditions = _ancestorAdditions,
                 clientAncestors = _clientAncestors, movedCandidates = _movedCandidates,
                 observedNativeDeletions = _observedDeletions, maximumDepth = _maxParentDepth,
@@ -326,11 +339,15 @@ public sealed partial class CaptureRunner
         List<object> upserts, List<object> audioEvents, bool initial)
     {
         var id = metadata.NetEntity.Id;
+        TrackPresentationOwner(id, uid);
         int? spriteId = null;
         if (_entities.TryGetComponent<SpriteComponent>(uid, out var component))
             spriteId = CaptureSprite(uid, id, component, initial);
         else
+        {
             _previousSprites.Remove(id);
+            RemovePhaseState(id);
+        }
         var record = new { id, parentId = transform.ParentUid == EntityUid.Invalid ? (int?) null
                 : _entities.GetNetEntity(transform.ParentUid).Id,
             prototype = metadata.EntityPrototype?.ID,

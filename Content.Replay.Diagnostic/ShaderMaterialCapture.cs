@@ -79,6 +79,24 @@ public sealed partial class CaptureRunner
         return binding;
     }
 
+    // Scalar membership inspection only. An uncached immutable snapshot becomes an
+    // appearance candidate; CaptureMaterial owns any actual serialization/interning.
+    private bool TryReadCapturedMaterial(ShaderInstance? shader, out MaterialBinding binding)
+    {
+        binding = new(null, null, false);
+        if (shader == null) return true;
+        string? reason = shader.Disposed ? "disposed-instance" : shader.Mutable ? "mutable-instance" : null;
+        if (reason == null && shader is not IReplayShaderSnapshot) reason = "headless-recorder-unavailable";
+        if (reason != null) { binding = new(null, reason, true); return true; }
+        var snapshot = ((IReplayShaderSnapshot) shader).CaptureReplaySnapshot();
+        if (snapshot.Mutable) throw new InvalidDataException("Headless shader snapshot changed mutability.");
+        reason = snapshot.Program.Reloaded ? "source-reload-not-supported"
+            : snapshot.Program.Preset != "Default" ? "raw-preset-not-supported"
+            : snapshot.Program.RootPath == null ? "source-root-unavailable" : null;
+        if (reason != null) { binding = new(null, reason, true); return true; }
+        return _materialSnapshots.TryGetValue(snapshot, out binding);
+    }
+
     private MaterialBinding UnavailableMaterial(string reason)
     {
         _materialUnavailable.TryGetValue(reason, out var count);

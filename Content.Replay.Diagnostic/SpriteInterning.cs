@@ -42,15 +42,7 @@ public sealed partial class CaptureRunner
             var material = CaptureMaterial(layer.Shader);
             if (texturePath != null)
                 EnsureResource("image", texturePath, BodyMetadata);
-            _layerScratch[index] = new LayerValue(index, layer.Visible,
-                ColorValue.From(layer.Color), VectorValue.From(layer.Scale), VectorValue.From(layer.Offset),
-                layer.Rotation.Theta, rsi?.Path.ToString(), layer.State.Name, texturePath,
-                layer.AnimationFrame, layer.AnimationTimeLeft, layer.AutoAnimated, layer.Loop, layer.Cycle,
-                layer.Reversed, EnumName(layer.DirOffset), EnumName(layer.RenderingStrategy), shader,
-                layer.Shader != null, layer.Shader?.Mutable, material.ParametersUnavailable,
-                layer.CopyToShaderParameters != null,
-                CaptureShaderCopy((uid, component), layer.CopyToShaderParameters, nativeLayers.Count),
-                material.MaterialId, material.UnavailableReason);
+            _layerScratch[index] = ReadLayerValue(uid, component, layer, index, nativeLayers.Count, material);
         }
         var spriteSystem = _entities.System<SpriteSystem>();
         var nativePosts = spriteSystem.GetPostShaders(component);
@@ -60,22 +52,14 @@ public sealed partial class CaptureRunner
         {
             var post = nativePosts[index];
             var material = CaptureMaterial(post.Shader);
-            _postScratch[index] = new PostShaderValue(post.Id, post.Shader != null,
-                post.GetScreenTexture, post.RaiseShaderEvent,
-                material.ParametersUnavailable || post.GetScreenTexture || post.RaiseShaderEvent,
-                material.MaterialId, post.GetScreenTexture || post.RaiseShaderEvent
-                    ? "render-only-inputs-not-captured" : material.UnavailableReason);
+            _postScratch[index] = ReadPostValue(post, material);
         }
         if (initial)
         {
             _sprites++;
             _layers += nativeLayers.Count;
         }
-        var head = new SpriteHead(component.Visible, component.ContainerOccluded, component.DrawDepth,
-            component.RenderOrder, ColorValue.From(component.Color), VectorValue.From(component.Scale),
-            VectorValue.From(component.Offset), component.Rotation.Theta, component.NoRotation,
-            component.SnapCardinals, component.EnableDirectionOverride, EnumName(component.DirectionOverride),
-            component.GranularLayersRendering, BoundsValue.From(spriteSystem.GetLocalBounds((uid, component))));
+        var head = ReadSpriteHead(component, BoundsValue.From(spriteSystem.GetLocalBounds((uid, component))));
         var layers = _layerScratch.AsSpan(0, nativeLayers.Count);
         var posts = _postScratch.AsSpan(0, nativePosts.Count);
 
@@ -109,7 +93,7 @@ public sealed partial class CaptureRunner
         var bytes = JsonSerializer.SerializeToUtf8Bytes(new {
             head.Visible, head.ContainerOccluded, head.DrawDepth, head.RenderOrder,
             head.Color, head.Scale, head.Offset, head.Rotation, head.NoRotation, head.SnapCardinals,
-            head.EnableDirectionOverride, head.DirectionOverride, head.GranularLayersRendering,
+            head.EnableDirectionOverride, head.DirectionOverride, head.GranularLayersRendering, head.Loop,
             nativeLocalBounds = head.NativeLocalBounds.ToArray(),
             layers = ownedLayers, postShaders = ownedPosts }, Json);
         if (_spriteDefinitionBytes + bytes.Length > Program.MaxSpriteDefinitionBytes)
@@ -120,6 +104,51 @@ public sealed partial class CaptureRunner
         _spriteDefinitionBytes += bytes.Length;
         _previousSprites[entityId] = definition.Id;
         return definition.Id;
+    }
+
+    private LayerValue ReadLayerValue(EntityUid uid, SpriteComponent component, SpriteComponent.Layer layer,
+        int index, int count, MaterialBinding material)
+        => new(index, layer.Visible, ColorValue.From(layer.Color), VectorValue.From(layer.Scale),
+            VectorValue.From(layer.Offset), layer.Rotation.Theta, (layer.RSI ?? component.BaseRSI)?.Path.ToString(),
+            layer.State.Name, ResolveTexture(layer.Texture), layer.Loop, layer.Cycle,
+            EnumName(layer.DirOffset), EnumName(layer.RenderingStrategy), layer.ShaderPrototype?.ToString(),
+            layer.Shader != null, layer.Shader?.Mutable, material.ParametersUnavailable,
+            layer.CopyToShaderParameters != null, CaptureShaderCopy((uid, component), layer.CopyToShaderParameters, count),
+            material.MaterialId, material.UnavailableReason);
+
+    private static PostShaderValue ReadPostValue(SpriteComponent.PostShaderEntry post, MaterialBinding material)
+        => new(post.Id, post.Shader != null, post.GetScreenTexture, post.RaiseShaderEvent,
+            material.ParametersUnavailable || post.GetScreenTexture || post.RaiseShaderEvent,
+            material.MaterialId, post.GetScreenTexture || post.RaiseShaderEvent
+                ? "render-only-inputs-not-captured" : material.UnavailableReason);
+
+    private static SpriteHead ReadSpriteHead(SpriteComponent component, BoundsValue bounds)
+        => new(component.Visible, component.ContainerOccluded, component.DrawDepth, component.RenderOrder,
+            ColorValue.From(component.Color), VectorValue.From(component.Scale), VectorValue.From(component.Offset),
+            component.Rotation.Theta, component.NoRotation, component.SnapCardinals, component.EnableDirectionOverride,
+            EnumName(component.DirectionOverride), component.GranularLayersRendering, component.Loop, bounds);
+
+    // Compare reusable native scalars against shared phase-free values. No bounds query,
+    // material/source serialization, arrays or dictionary interning on a stable owner.
+    private bool NativeAppearanceMatches(EntityUid uid, int id, SpriteComponent component)
+    {
+        if (!_previousSprites.TryGetValue(id, out var spriteId)) return false;
+        var definition = _spriteDefinitions[spriteId - 1];
+        if (ReadSpriteHead(component, definition.Head.NativeLocalBounds) != definition.Head) return false;
+        var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
+        if (layers.Count != definition.Layers.Length) return false;
+        for (var index = 0; index < layers.Count; index++)
+        {
+            if (!TryReadCapturedMaterial(layers[index].Shader, out var material)
+                || ReadLayerValue(uid, component, layers[index], index, layers.Count, material) != definition.Layers[index])
+                return false;
+        }
+        var posts = _entities.System<SpriteSystem>().GetPostShaders(component);
+        if (posts.Count != definition.Posts.Length) return false;
+        for (var index = 0; index < posts.Count; index++)
+            if (!TryReadCapturedMaterial(posts[index].Shader, out var material)
+                || ReadPostValue(posts[index], material) != definition.Posts[index]) return false;
+        return true;
     }
 
     private void WriteSpriteDefinitions()
@@ -154,7 +183,7 @@ public sealed partial class CaptureRunner
     private readonly record struct SpriteHead(bool Visible, bool ContainerOccluded, int DrawDepth,
         uint RenderOrder, ColorValue Color, VectorValue Scale, VectorValue Offset, double Rotation,
         bool NoRotation, bool SnapCardinals, bool EnableDirectionOverride, string DirectionOverride,
-        bool GranularLayersRendering, BoundsValue NativeLocalBounds);
+        bool GranularLayersRendering, bool Loop, BoundsValue NativeLocalBounds);
 
     // Native CPU bounds include sprite scale and contributing layers, not sprite offset/rotation.
     // They are not a guarantee about arbitrary shader expansion.
@@ -174,7 +203,7 @@ public sealed partial class CaptureRunner
 
     private readonly record struct LayerValue(int Index, bool Visible, ColorValue Color, VectorValue Scale,
         VectorValue Offset, double Rotation, string? RsiPath, string? RsiState, string? TexturePath,
-        int AnimationFrame, float AnimationTimeLeft, bool AutoAnimated, bool Loop, bool Cycle, bool Reversed,
+        bool Loop, bool Cycle,
         string DirectionOffset, string RenderingStrategy, string? ShaderPrototype, bool HasShader,
         bool? MaterialMutable, bool ShaderParametersUnavailable, bool CopyToShader,
         ShaderCopyBinding? CopyToShaderBinding, int? MaterialId, string? MaterialUnavailableReason);
