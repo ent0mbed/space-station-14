@@ -57,6 +57,21 @@ Canonical Go additionally applies its combined 512 MiB guard.
 This capability preserves inputs and does not claim lighting
 rendering, roofs, emission, shadows, FOV, sun or AO completeness.
 
+The `resources` command also retrieves the original pinned shader bodies needed by
+the first TypeScript viewer's point/mask and wall passes: `light-soft.swsl`, its
+`light_shared.swsl` and `shadow_cast_shared.swsl` includes,
+`wall-bleed-blur.swsl`/`wall-merge.swsl`, and the engine's
+`base-raw.frag`/`base-raw.vert` wrappers. Together
+with the existing sprite source and three sprite wrappers this is an exact
+eleven-file engine allowlist. Every body retains its pinned size, SHA-256, origin,
+source URL and original MIT notice. Downloads remain bounded and publish only
+after the whole cache validates. FOV and unused native passes are outside
+this closure; retrieving source bodies does not enable rendering support.
+
+Regenerate a cache produced before this allowlist change by using a fresh `--cache`
+directory. Intermediate cache manifests are internal artifacts; this reader does
+not migrate them or retain a separate four-file compatibility path.
+
 For the verified public three-second fixture, download both original ZIPs:
 
 ```sh

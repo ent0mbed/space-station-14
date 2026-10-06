@@ -173,7 +173,30 @@ internal static class ReplayResources
         new("engine-assembly", "Robust.Client.Graphics.Clyde.Shaders.base-default.frag", "engine/base-default.frag", 2261,
             EngineInputs[1].Hash, EngineURL("Robust.Client/Graphics/Clyde/Shaders/base-default.frag")),
         new("engine-assembly", "Robust.Client.Graphics.Clyde.Shaders.base-default.vert", "engine/base-default.vert", 1567,
-            EngineInputs[2].Hash, EngineURL("Robust.Client/Graphics/Clyde/Shaders/base-default.vert"))];
+            EngineInputs[2].Hash, EngineURL("Robust.Client/Graphics/Clyde/Shaders/base-default.vert")),
+        // The existing viewer's point/mask and wall passes use this exact raw-pass closure.
+        // shadow_cast_shared is a required include, not a GPU shadow-depth program.
+        new("engine-commit", "/Shaders/Internal/light-soft.swsl", "engine/light-soft.swsl", 3087,
+            "213fa70ea54430d18bdb9eec2636d8591a74ceb2cad76cb803f9579c74b63311",
+            EngineURL("Resources/Shaders/Internal/light-soft.swsl")),
+        new("engine-commit", "/Shaders/Internal/light_shared.swsl", "engine/light_shared.swsl", 2014,
+            "ed1614de12d11ec5c6baa571171fba45e1a634842a7049e5bda608c467e33fbc",
+            EngineURL("Resources/Shaders/Internal/light_shared.swsl")),
+        new("engine-commit", "/Shaders/Internal/shadow_cast_shared.swsl", "engine/shadow_cast_shared.swsl", 1251,
+            "099ad0f35a57597bad5c3877e650ada34b53440484bdd20a29ca89d325ce8259",
+            EngineURL("Resources/Shaders/Internal/shadow_cast_shared.swsl")),
+        new("engine-commit", "/Shaders/Internal/wall-bleed-blur.swsl", "engine/wall-bleed-blur.swsl", 1065,
+            "ee8bd766bbc32a309598909046315bcc160b81f7bf1dee231d0b9ad0e587c7f9",
+            EngineURL("Resources/Shaders/Internal/wall-bleed-blur.swsl")),
+        new("engine-commit", "/Shaders/Internal/wall-merge.swsl", "engine/wall-merge.swsl", 213,
+            "9b630f527366f0bf00a90863a288d945166b1625d52722cacaf1eaebaf92f72d",
+            EngineURL("Resources/Shaders/Internal/wall-merge.swsl")),
+        new("engine-assembly", "Robust.Client.Graphics.Clyde.Shaders.base-raw.frag", "engine/base-raw.frag", 457,
+            "d8d6dea3d79e6292a5c63f48a86a6e07517f88fcc00a8b562208dc1757aff555",
+            EngineURL("Robust.Client/Graphics/Clyde/Shaders/base-raw.frag")),
+        new("engine-assembly", "Robust.Client.Graphics.Clyde.Shaders.base-raw.vert", "engine/base-raw.vert", 1163,
+            "6c5ce9a90ad808d396bf00de62524002ed33554efd3ea914db3ea7c49c31a0be",
+            EngineURL("Robust.Client/Graphics/Clyde/Shaders/base-raw.vert"))];
 
     private static string EngineURL(string path) =>
         $"https://github.com/space-wizards/RobustToolbox/blob/{Program.EngineCommit}/{path}";
