@@ -1,0 +1,132 @@
+diff --git a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.ReplayAnimationEligibility.cs b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.ReplayAnimationEligibility.cs
+index 3f0a50d0a..23ced2528 100644
+--- a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.ReplayAnimationEligibility.cs
++++ b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.ReplayAnimationEligibility.cs
+@@ -1,3 +1,8 @@
++using System;
++using System.Collections.Generic;
++using System.Collections.ObjectModel;
++using System.IO;
++using System.Runtime.InteropServices;
+ using System.Threading;
+ 
+ namespace Robust.Client.GameObjects;
+@@ -12,6 +17,54 @@ public sealed partial class SpriteComponent
+     private long _replayAnimationEligibilityRevision;
+     public long ReplayAnimationEligibilityRevision => Volatile.Read(ref _replayAnimationEligibilityRevision);
+ 
++    // Permanent for this component instance. Native layer aliasing is preserved,
++    // but its owner notifications no longer describe every list containing it.
++    private bool _replayAnimationEligibilityFallback;
++    public bool ReplayAnimationEligibilityCacheSafe => !_replayAnimationEligibilityFallback;
++
++    internal void DisableReplayAnimationEligibilityCaching()
++    {
++        _replayAnimationEligibilityFallback = true;
++        InvalidateReplayAnimationEligibility();
++    }
++
+     internal void InvalidateReplayAnimationEligibility()
+         => Interlocked.Increment(ref _replayAnimationEligibilityRevision);
++
++    private List<Layer>? _readOnlyLayerSource;
++    private ReadOnlyCollection<Layer>? _readOnlyLayers;
++
++    internal void ResetReadOnlyLayers()
++    {
++        _readOnlyLayerSource = null;
++        _readOnlyLayers = null;
++    }
++
++    private ReadOnlyCollection<Layer> GetReadOnlyLayers()
++    {
++        // CopySprite replaces the list. A previously obtained view continues to
++        // describe its original list, as AllLayers did before this wrapper.
++        if (!ReferenceEquals(_readOnlyLayerSource, Layers))
++        {
++            _readOnlyLayerSource = Layers;
++            _readOnlyLayers = Layers.AsReadOnly();
++        }
++        return _readOnlyLayers!;
++    }
++
++    /// <summary>
++    /// Allocation-free diagnostic traversal with an enforced layer budget.
++    /// </summary>
++    /// <remarks>
++    /// Use immediately on the owning engine thread, without intervening layer
++    /// mutations. Neither this span nor the revision counters synchronize lists
++    /// or RSI dictionaries. Never retain it across TickUpdate or FrameUpdate.
++    /// </remarks>
++    public ReadOnlySpan<Layer> GetReplayAnimationLayers(int maximumLayers)
++    {
++        ArgumentOutOfRangeException.ThrowIfNegative(maximumLayers);
++        if (Layers.Count > maximumLayers)
++            throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
++        return CollectionsMarshal.AsSpan(Layers);
++    }
+ }
+diff --git a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
+index c9368eb3d..2aab43f61 100644
+--- a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
++++ b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
+@@ -268,7 +268,7 @@ namespace Robust.Client.GameObjects
+         public ISpriteLayer this[int layer] => Layers[layer];
+         public ISpriteLayer this[Index layer] => Layers[layer];
+         public ISpriteLayer this[object layerKey] => this[LayerMap[layerKey]];
+-        public IEnumerable<ISpriteLayer> AllLayers => Layers;
++        public IEnumerable<ISpriteLayer> AllLayers => GetReadOnlyLayers();
+ 
+         void ISerializationHooks.AfterDeserialization()
+         {
+@@ -1106,6 +1106,9 @@ namespace Robust.Client.GameObjects
+             /// </summary>
+             [Access(typeof(SpriteSystem), typeof(SpriteComponent))]
+             [ViewVariables] internal Entity<SpriteComponent> Owner;
++            // Carries alias history through native removal/re-addition. Not copied
++            // into newly cloned layers and neither serialized nor networked.
++            internal bool ReplayAnimationWasShared;
+             // Internal, because I might want to change this in future W/O breaking changes.
+             // Also, it's possible for SpriteComponent to be null if it is not currently attached to a sprite.
+ 
+diff --git a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Component.cs b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Component.cs
+index f460771db..39f5b0e05 100644
+--- a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Component.cs
++++ b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Component.cs
+@@ -88,6 +88,8 @@ public sealed partial class SpriteSystem
+         else
+         {
+             target.Comp.Layers = new List<SpriteComponent.Layer>(source.Comp.Layers.Count);
++            // Do not keep an obsolete backing list alive through its cached view.
++            target.Comp.ResetReadOnlyLayers();
+             foreach (var otherLayer in source.Comp.Layers)
+             {
+                 var layer = new SpriteComponent.Layer(otherLayer, target.Comp);
+diff --git a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Layer.cs b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Layer.cs
+index af66844f9..bb1283759 100644
+--- a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Layer.cs
++++ b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Layer.cs
+@@ -105,6 +105,14 @@ public sealed partial class SpriteSystem
+     /// </summary>
+     public int AddLayer(Entity<SpriteComponent?> sprite, Layer layer, int? index = null)
+     {
++        // Preserve native reassignment, including its failure path. An existing
++        // owner may still retain this same layer after Owner is overwritten.
++        if (layer.Owner.Comp is { } previous && previous.Layers.Contains(layer))
++        {
++            previous.DisableReplayAnimationEligibilityCaching();
++            layer.ReplayAnimationWasShared = true;
++        }
++
+         if (!_query.Resolve(sprite.Owner, ref sprite.Comp))
+         {
+             layer.Index = -1;
+@@ -114,6 +122,8 @@ public sealed partial class SpriteSystem
+ 
+         // Include blank insertion and index remapping, not just drawn layers.
+         sprite.Comp.InvalidateReplayAnimationEligibility();
++        if (layer.ReplayAnimationWasShared)
++            sprite.Comp.DisableReplayAnimationEligibilityCaching();
+         layer.Owner = sprite!;
+ 
+         if (index is { } i && i != sprite.Comp.Layers.Count)

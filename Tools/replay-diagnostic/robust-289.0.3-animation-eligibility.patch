@@ -1,0 +1,173 @@
+diff --git a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.ReplayAnimationEligibility.cs b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.ReplayAnimationEligibility.cs
+new file mode 100644
+index 0000000000..3f0a50d0a5
+--- /dev/null
++++ b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.ReplayAnimationEligibility.cs
+@@ -0,0 +1,17 @@
++using System.Threading;
++
++namespace Robust.Client.GameObjects;
++
++public sealed partial class SpriteComponent
++{
++    // Diagnostic-only, neither serialized nor networked. A replacement component
++    // gets a new identity even when both components have revision zero.
++    private static long _nextReplayAnimationIdentity;
++    public long ReplayAnimationIdentity { get; } = Interlocked.Increment(ref _nextReplayAnimationIdentity);
++
++    private long _replayAnimationEligibilityRevision;
++    public long ReplayAnimationEligibilityRevision => Volatile.Read(ref _replayAnimationEligibilityRevision);
++
++    internal void InvalidateReplayAnimationEligibility()
++        => Interlocked.Increment(ref _replayAnimationEligibilityRevision);
++}
+diff --git a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
+index f02166579f..c9368eb3d7 100644
+--- a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
++++ b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
+@@ -272,6 +272,7 @@ public ShaderInstance? PostShader
+ 
+         void ISerializationHooks.AfterDeserialization()
+         {
++            InvalidateReplayAnimationEligibility();
+             // Please somebody burn this to the ground. There is so much spaghetti.
+             // Why has no one answered my prayers.
+             // I answered half of your prayer someone please answer the rest
+@@ -1250,6 +1251,7 @@ public bool Visible
+                     if (_visible == value)
+                         return;
+                     _visible = value;
++                    _parent.InvalidateReplayAnimationEligibility();
+ 
+                     Owner.Comp.BoundsDirty = true;
+ 
+@@ -1279,6 +1281,7 @@ public bool AutoAnimated
+                     if (_autoAnimated == value)
+                         return;
+                     _autoAnimated = value;
++                    _parent.InvalidateReplayAnimationEligibility();
+                     // ReSharper disable once ConditionalAccessQualifierIsNonNullableAccordingToAPIContract
+                     if (_parent.Owner != EntityUid.Invalid)
+                         _parent.Sys?.QueueUpdateIsInert((_parent.Owner, _parent));
+@@ -1611,6 +1614,8 @@ public Vector2i PixelSize
+             /// </summary>
+             internal void UpdateActualState()
+             {
++                // Legacy RSI/state properties can run before Sys is available.
++                _parent.InvalidateReplayAnimationEligibility();
+                 // ReSharper disable once ConditionalAccessQualifierIsNonNullableAccordingToAPIContract
+                 _parent.Sys?.QueueUpdateIsInert((_parent.Owner, _parent));
+                 if (!State.IsValid)
+diff --git a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Component.cs b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Component.cs
+index 7826a7de43..f460771db4 100644
+--- a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Component.cs
++++ b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Component.cs
+@@ -59,6 +59,8 @@ public void CopySprite(Entity<SpriteComponent?> source, Entity<SpriteComponent?>
+         if (!Resolve(target.Owner, ref target.Comp))
+             return;
+ 
++        // Bulk writes and an empty copy can bypass every layer setter.
++        target.Comp.InvalidateReplayAnimationEligibility();
+         target.Comp._baseRsi = source.Comp._baseRsi;
+         target.Comp.rsi = source.Comp.rsi;
+         target.Comp.layerDatums = new List<PrototypeLayerData>(source.Comp.layerDatums);
+@@ -119,6 +121,9 @@ in target
+     /// </summary>
+     public void QueueUpdateIsInert(Entity<SpriteComponent> sprite)
+     {
++        // Observe every call, including a second mutation after pre-frame
++        // classification while the native inert queue is still coalesced.
++        sprite.Comp.InvalidateReplayAnimationEligibility();
+         if (sprite.Comp._inertUpdateQueued)
+             return;
+ 
+diff --git a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Setters.cs b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Setters.cs
+index f5e8e4ad25..d9b29e6653 100644
+--- a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Setters.cs
++++ b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Setters.cs
+@@ -105,6 +105,7 @@ public void SetBaseRsi(Entity<SpriteComponent?> sprite, RSI? value)
+             return;
+ 
+         sprite.Comp._baseRsi = value;
++        sprite.Comp.InvalidateReplayAnimationEligibility();
+         if (value == null)
+             return;
+ 
+diff --git a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.cs b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.cs
+index 17452d547a..931613461c 100644
+--- a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.cs
++++ b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.cs
+@@ -91,6 +91,7 @@ private void LoadLayers(Entity<SpriteComponent> sprite)
+             if (sprite.Comp.layerDatums.Count == 0)
+                 return;
+ 
++            sprite.Comp.InvalidateReplayAnimationEligibility();
+             sprite.Comp.LayerMap.Clear();
+             sprite.Comp.Layers.Clear();
+             foreach (var datum in sprite.Comp.layerDatums)
+diff --git a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Layer.cs b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Layer.cs
+index 9ed7511b41..af66844f90 100644
+--- a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Layer.cs
++++ b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Layer.cs
+@@ -112,6 +112,8 @@ public int AddLayer(Entity<SpriteComponent?> sprite, Layer layer, int? index = n
+             return -1;
+         }
+ 
++        // Include blank insertion and index remapping, not just drawn layers.
++        sprite.Comp.InvalidateReplayAnimationEligibility();
+         layer.Owner = sprite!;
+ 
+         if (index is { } i && i != sprite.Comp.Layers.Count)
+diff --git a/Robust.Client/ResourceManagement/ResourceCache.Preload.cs b/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
+index 06ee5df2f5..30fa576ad1 100644
+--- a/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
++++ b/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
+@@ -56,6 +56,9 @@ public void AddToDeserialize(SpriteComponent component)
+ 
+         public void LoadBaseRsi(EntityUid uid, SpriteComponent component)
+         {
++            // Prototype/live bulk reconstruction writes the base RSI and layer
++            // list directly, including replacement by entirely blank layers.
++            component.InvalidateReplayAnimationEligibility();
+             if (!string.IsNullOrWhiteSpace(component.rsi))
+             {
+                 var rsiPath = SpriteSystem.TextureRoot / component.rsi;
+diff --git a/Robust.Client/Graphics/RSI/RSI.cs b/Robust.Client/Graphics/RSI/RSI.cs
+index 76ce2b5eb7..63cb2199c5 100644
+--- a/Robust.Client/Graphics/RSI/RSI.cs
++++ b/Robust.Client/Graphics/RSI/RSI.cs
+@@ -2,6 +2,7 @@
+ using System.Collections;
+ using System.Collections.Generic;
+ using System.Diagnostics.CodeAnalysis;
++using System.Threading;
+ using Robust.Shared.Maths;
+ using Robust.Shared.Serialization.Manager.Attributes;
+ using Robust.Shared.Utility;
+@@ -15,6 +16,11 @@ namespace Robust.Client.Graphics
+     [CopyByRef]
+     public sealed partial class RSI : IEnumerable<RSI.State>
+     {
++        // Resource loading may mutate different RSIs on parallel preload workers.
++        // This epoch is an invalidation signal, not synchronization for States.
++        private static long _replayAnimationStateEpoch;
++        public static long ReplayAnimationStateEpoch => Volatile.Read(ref _replayAnimationStateEpoch);
++
+         /// <summary>
+         ///     The size of this RSI, width x height.
+         /// </summary>
+@@ -34,11 +40,13 @@ public sealed partial class RSI : IEnumerable<RSI.State>
+         public void AddState(State state)
+         {
+             States[state.StateId] = state;
++            Interlocked.Increment(ref _replayAnimationStateEpoch);
+         }
+ 
+         public void RemoveState(StateId stateId)
+         {
+-            States.Remove(stateId);
++            if (States.Remove(stateId))
++                Interlocked.Increment(ref _replayAnimationStateEpoch);
+         }
+ 
+         public bool TryGetState(StateId stateId, [NotNullWhen(true)] out State? state)

@@ -12,6 +12,7 @@ internal static class Program
     public const string EngineVersion = "289.0.3";
     public const string EngineCommit = "36905986f6809420dbc78168fc494f91723d356b";
     public static PresentationPolicy Presentation = PresentationPolicy.Exact;
+    public static AnimationEligibilityStrategy OrdinaryAnimationEligibility = AnimationEligibilityStrategy.Cached;
     public static string SceneSchema => Presentation.SceneSchema;
     public static string SummarySchema => Presentation.SummarySchema;
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
@@ -76,6 +77,7 @@ internal static class Program
                   [--resources SS14.Client.zip]
                   [--profile ten-second|minute-preview] [--seconds NUMBER] [--tiles true|false]
                   [--presentation exact|visual]
+                  [--ordinary-animation-eligibility reference|cached]
                   [--assert-ordinary-phase ENTITY_ID:LAYER_INDEX]
                   [--max-sprite-definitions NUMBER] [--max-sprite-definition-bytes NUMBER]
                   [--max-resource-definitions NUMBER]
@@ -83,6 +85,8 @@ internal static class Program
                 Default profile: ten-second; default duration: 10 simulated seconds; tiles: false.
                 Presentation defaults to exact (schema 0.8). Visual (schema 0.9) holds countdown-only changes.
                 Presentation policy is independent of the duration profile and requires matching consumers.
+                Ordinary animation eligibility defaults to cached on the pinned serial engine thread.
+                Use reference for a full scan; shared layer owners always use a full scan.
                 Export is the default command. Without --resources, resources are downloaded to the local cache.
                 Resources are checked against the replay's SHA-256 on download and every cache reuse.
                 Profiles allow at most 10 or 60 simulated seconds. Resources must match the replay build/hash.
@@ -99,7 +103,7 @@ internal static class Program
             if (args.Length > 0 && args[0] == command) args = args[1..];
             var values = new Dictionary<string, string>();
             string[] exportOptions = ["--input", "--resources", "--cache", "--output", "--seconds", "--profile", "--tiles", "--presentation",
-                "--max-sprite-definitions", "--max-sprite-definition-bytes", "--max-resource-definitions", "--assert-ordinary-phase"];
+                "--max-sprite-definitions", "--max-sprite-definition-bytes", "--max-resource-definitions", "--assert-ordinary-phase", "--ordinary-animation-eligibility"];
             string[] supportedOptions = command switch
             {
                 "inspect" => ["--input"],
@@ -115,6 +119,7 @@ internal static class Program
                 values.Add(args[i], args[i + 1]);
             }
             Presentation = PresentationPolicy.Parse(values.GetValueOrDefault("--presentation"));
+            OrdinaryAnimationEligibility = AnimationEligibility.Parse(values.GetValueOrDefault("--ordinary-animation-eligibility"));
             Input = Path.GetFullPath(values["--input"]);
             var replay = ReplayIdentity.Read(Input);
             if (command == "inspect")

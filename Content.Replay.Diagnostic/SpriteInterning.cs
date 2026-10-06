@@ -21,10 +21,8 @@ public sealed partial class CaptureRunner
     private int CaptureSprite(EntityUid uid, int entityId, SpriteComponent component, bool initial)
     {
         _spriteCandidates++;
-        var nativeLayers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
-        if (nativeLayers.Count > _layerScratch.Length)
-            throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
-        for (var index = 0; index < nativeLayers.Count; index++)
+        var nativeLayers = component.GetReplayAnimationLayers(_layerScratch.Length);
+        for (var index = 0; index < nativeLayers.Length; index++)
         {
             var layer = nativeLayers[index];
             var rsi = layer.RSI ?? component.BaseRSI;
@@ -42,7 +40,7 @@ public sealed partial class CaptureRunner
             var material = CaptureMaterial(layer.Shader);
             if (texturePath != null)
                 EnsureResource("image", texturePath, BodyMetadata);
-            _layerScratch[index] = ReadLayerValue(uid, component, layer, index, nativeLayers.Count, material);
+            _layerScratch[index] = ReadLayerValue(uid, component, layer, index, nativeLayers.Length, material);
         }
         var spriteSystem = _entities.System<SpriteSystem>();
         var nativePosts = spriteSystem.GetPostShaders(component);
@@ -57,10 +55,10 @@ public sealed partial class CaptureRunner
         if (initial)
         {
             _sprites++;
-            _layers += nativeLayers.Count;
+            _layers += nativeLayers.Length;
         }
         var head = ReadSpriteHead(component, BoundsValue.From(spriteSystem.GetLocalBounds((uid, component))));
-        var layers = _layerScratch.AsSpan(0, nativeLayers.Count);
+        var layers = _layerScratch.AsSpan(0, nativeLayers.Length);
         var posts = _postScratch.AsSpan(0, nativePosts.Count);
 
         // BoundsDirty and PostShaderOrderDirty are not complete visual revisions. Compare the actual
