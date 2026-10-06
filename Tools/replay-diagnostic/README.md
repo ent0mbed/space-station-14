@@ -62,4 +62,5 @@ replay export. macOS and Windows have not been verified. The helper requires Bas
 Windows also needs symbolic-link support for the runtime content module links.
 
 See [animation-phases-07.md](animation-phases-07.md) for owner presentation
-semantics, and [minute-preview.md](minute-preview.md) for named clip limits.
+semantics, [visual-presentation-09.md](visual-presentation-09.md) for the opt-in
+visual policy, and [minute-preview.md](minute-preview.md) for named clip limits.

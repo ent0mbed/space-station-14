@@ -11,14 +11,15 @@ internal static class Program
     public const string GameBuild = "94087a918a2fae4571f5a529fe14ef7f5dce29a3";
     public const string EngineVersion = "289.0.3";
     public const string EngineCommit = "36905986f6809420dbc78168fc494f91723d356b";
-    public const string SceneSchema = "ss14-diagnostic/0.8";
-    public const string SummarySchema = "ss14-diagnostic-summary/0.8";
+    public static PresentationPolicy Presentation = PresentationPolicy.Exact;
+    public static string SceneSchema => Presentation.SceneSchema;
+    public static string SummarySchema => Presentation.SummarySchema;
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
     public const string AudioTimingCapability = "native-audio-timing-metadata/1";
     public const string SpriteBoundsCapability = "native-sprite-local-bounds/1";
     public const string TileEdgeCapability = "native-tile-edge-inputs/1";
     public const string FrozenMaterialCapability = "native-frozen-material-snapshots/1";
-    public const string PresentationCapability = "native-sprite-presentation-samples/1";
+    public static string PresentationCapability => Presentation.Capability;
     // Every shared layer carries the native Blank boolean. Legacy absence means unknown.
     public const string LayerBlankCapability = "native-sprite-layer-blank/1";
     public const int MaxPresentationOwners = 250_000;
@@ -74,11 +75,14 @@ internal static class Program
                   export --input REPLAY.zip --output DIRECTORY [--cache DIRECTORY]
                   [--resources SS14.Client.zip]
                   [--profile ten-second|minute-preview] [--seconds NUMBER] [--tiles true|false]
+                  [--presentation exact|visual]
                   [--assert-ordinary-phase ENTITY_ID:LAYER_INDEX]
                   [--max-sprite-definitions NUMBER] [--max-sprite-definition-bytes NUMBER]
                   [--max-resource-definitions NUMBER]
 
                 Default profile: ten-second; default duration: 10 simulated seconds; tiles: false.
+                Presentation defaults to exact (schema 0.8). Visual (schema 0.9) holds countdown-only changes.
+                Presentation policy is independent of the duration profile and requires matching consumers.
                 Export is the default command. Without --resources, resources are downloaded to the local cache.
                 Resources are checked against the replay's SHA-256 on download and every cache reuse.
                 Profiles allow at most 10 or 60 simulated seconds. Resources must match the replay build/hash.
@@ -94,7 +98,7 @@ internal static class Program
                 throw new ArgumentException($"Unknown command: {command}. Expected inspect, resources, or export.");
             if (args.Length > 0 && args[0] == command) args = args[1..];
             var values = new Dictionary<string, string>();
-            string[] exportOptions = ["--input", "--resources", "--cache", "--output", "--seconds", "--profile", "--tiles",
+            string[] exportOptions = ["--input", "--resources", "--cache", "--output", "--seconds", "--profile", "--tiles", "--presentation",
                 "--max-sprite-definitions", "--max-sprite-definition-bytes", "--max-resource-definitions", "--assert-ordinary-phase"];
             string[] supportedOptions = command switch
             {
@@ -110,6 +114,7 @@ internal static class Program
                     throw new ArgumentException($"Unknown option: {args[i]}.");
                 values.Add(args[i], args[i + 1]);
             }
+            Presentation = PresentationPolicy.Parse(values.GetValueOrDefault("--presentation"));
             Input = Path.GetFullPath(values["--input"]);
             var replay = ReplayIdentity.Read(Input);
             if (command == "inspect")

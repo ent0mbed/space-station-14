@@ -38,7 +38,6 @@ public sealed partial class CaptureRunner
         {
             if (_presentationOwners.Count >= Program.MaxPresentationOwners)
                 throw new InvalidDataException("Presentation owner budget exceeded.");
-            _presentationBaselineOwners.Add(id);
         }
         _presentationOwners[id] = uid;
     }
@@ -179,17 +178,18 @@ public sealed partial class CaptureRunner
         _phaseScratch[count++] = new(index, layer.AnimationFrame, layer.AnimationTimeLeft, layer.AutoAnimated, layer.Reversed);
     }
 
-    private bool PresentationMatches(int id, int spriteId, VectorValue offset, string? reason, ReadOnlySpan<LayerPhaseValue> layers)
-        => _presentationStates.TryGetValue(id, out var previous) && previous.Value.SpriteId == spriteId
-            && previous.Value.Offset == offset && previous.Value.PhaseUnavailableReason == reason
-            && layers.SequenceEqual(previous.Value.Layers);
+    private static bool PresentationMatches(SpritePresentationReplacement previous, int spriteId,
+        VectorValue offset, string? reason, ReadOnlySpan<LayerPhaseValue> layers)
+        => previous.SpriteId == spriteId && previous.Offset == offset && previous.PhaseUnavailableReason == reason
+            && Program.Presentation.LayersEqual(previous.Layers, layers);
 
     private void StagePresentation(int id, int spriteId, VectorValue offset, string? reason, int count, bool rebind)
     {
         if (!float.IsFinite(offset.X) || !float.IsFinite(offset.Y))
             throw new InvalidDataException($"Nonfinite native sprite offset on {id}.");
         var layers = _phaseScratch.AsSpan(0, count);
-        if (!rebind && PresentationMatches(id, spriteId, offset, reason, layers)) return;
+        if (!rebind && _presentationStates.TryGetValue(id, out var previous)
+            && PresentationMatches(previous.Value, spriteId, offset, reason, layers)) return;
         if (_pendingPresentation.ContainsKey(id)) throw new InvalidDataException("Duplicate staged presentation owner.");
         var bytes = 192 + count * 32;
         if (_presentationRetainedBytes + _pendingPresentationBytes + bytes > Program.MaxPresentationRetainedBytes)
@@ -265,9 +265,8 @@ public sealed partial class CaptureRunner
         var existed = _presentationStates.TryGetValue(id, out var previous);
         replacement = null;
         encodedBytes = 0;
-        if (existed && previous.Value.SpriteId == spriteId && previous.Value.Offset == offset
-            && previous.Value.PhaseUnavailableReason == phaseUnavailableReason
-            && values.SequenceEqual(previous.Value.Layers)) return false; // timestamp alone never dirties presentation
+        // Silence keeps the actual previously emitted countdown and timestamp.
+        if (existed && PresentationMatches(previous.Value, spriteId, offset, phaseUnavailableReason, values)) return false;
         if (!existed && _presentationStates.Count >= Program.MaxPresentationOwners)
             throw new InvalidDataException("Retained presentation owner budget exceeded.");
         replacement = new(id, spriteId, sampleReplayTime100ns, offset, phaseUnavailableReason, ownedLayers ?? values.ToArray());
@@ -321,8 +320,6 @@ public sealed partial class CaptureRunner
 
     private sealed record SpritePresentationReplacement(int EntityId, int SpriteId, long SampleReplayTime100ns,
         VectorValue Offset, string? PhaseUnavailableReason, LayerPhaseValue[] Layers);
-    private readonly record struct LayerPhaseValue(int Index, int AnimationFrame, float AnimationTimeLeft,
-        bool AutoAnimated, bool Reversed);
     private readonly record struct RetainedPresentation(SpritePresentationReplacement Value, int Bytes);
     private sealed record PendingPresentation(VectorValue Offset, string? Reason, LayerPhaseValue[] Layers, int Bytes);
 }

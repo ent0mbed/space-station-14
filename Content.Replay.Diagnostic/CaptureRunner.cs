@@ -351,6 +351,7 @@ public sealed partial class CaptureRunner
         List<object> upserts, List<object> audioEvents, bool initial)
     {
         var id = metadata.NetEntity.Id;
+        var ownerPreviouslyPresent = _fingerprints.ContainsKey(id);
         TrackPresentationOwner(id, uid);
         int? spriteId = null;
         var previousSpriteId = _previousSprites.GetValueOrDefault(id);
@@ -361,7 +362,8 @@ public sealed partial class CaptureRunner
             _previousSprites.Remove(id);
             RemovePresentationState(id);
         }
-        if ((spriteId ?? 0) != previousSpriteId) _presentationBaselineOwners.Add(id);
+        if (PresentationPolicy.RequiresBaseline(ownerPreviouslyPresent, previousSpriteId, spriteId ?? 0))
+            _presentationBaselineOwners.Add(id);
         var record = new { id, parentId = transform.ParentUid == EntityUid.Invalid ? (int?) null
                 : _entities.GetNetEntity(transform.ParentUid).Id,
             prototype = metadata.EntityPrototype?.ID,
