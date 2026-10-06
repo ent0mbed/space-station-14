@@ -131,7 +131,7 @@ public sealed partial class CaptureRunner
         _output = output;
         Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.LayerPhaseCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.PresentationCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
             spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
@@ -140,7 +140,7 @@ public sealed partial class CaptureRunner
                 tickPeriod100ns = TimeSpan.TicksPerSecond / sourceTickRate },
             scope = new { gameBuild = Program.GameBuild, forkId = Program.ForkId,
                 bundleSha256 = Program.ResourceBundleSha256, roundId, sourceStartTick = data.TickOffset.Value },
-            phaseLimits = new { owners = Program.MaxPhaseOwners, layersPerOwner = Program.MaxPhaseLayersPerOwner, retainedBytes = Program.MaxPhaseRetainedBytes },
+            presentationLimits = new { owners = Program.MaxPresentationOwners, layersPerOwner = Program.MaxPresentationLayersPerOwner, retainedBytes = Program.MaxPresentationRetainedBytes },
             dictionaryLimits = new { spriteDefinitions = Program.MaxSpriteDefinitions,
                 spriteDefinitionBytes = Program.MaxSpriteDefinitionBytes, resourceDefinitions = Program.MaxResourceDefinitions,
                 shaderParameterNameCharacters = Program.MaxShaderParameterNameCharacters,
@@ -235,7 +235,7 @@ public sealed partial class CaptureRunner
             }
             if (index > 0) ProjectIndependentAppearance(upserts, audioEvents);
             ProjectMoved(upserts, audioEvents, index == 0);
-            var spritePhaseReplacements = CaptureLayerPhases(data.ReplayTime[index].Ticks, index);
+            var spritePresentationReplacements = CaptureSpritePresentation(data.ReplayTime[index].Ticks, index);
             if (index == 0)
                 _initialEntities = upserts.Count;
             _projectionMs += Stopwatch.GetElapsedTime(projectionStart).TotalMilliseconds;
@@ -245,7 +245,7 @@ public sealed partial class CaptureRunner
             WriteShaderDefinitions();
             WriteSpriteDefinitions();
             // The initial native world is large. Keep JSONL records bounded without dropping entities.
-            var chunkCount = index == 0 ? Math.Max((upserts.Count + 999) / 1000, (spritePhaseReplacements.Count + 999) / 1000) : 1;
+            var chunkCount = index == 0 ? Math.Max((upserts.Count + 999) / 1000, (spritePresentationReplacements.Count + 999) / 1000) : 1;
             for (var chunk = 0; chunk < chunkCount; chunk++)
                 Write(new { kind = index == 0 ? "snapshot" : "delta", sequence = index,
                     chunkIndex = chunk, chunkCount,
@@ -253,7 +253,7 @@ public sealed partial class CaptureRunner
                     sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
                     upserts = index == 0 ? upserts.Skip(chunk * 1000).Take(1000) : upserts,
                     deletes, audioEvents = chunk == 0 ? audioEvents : [],
-                    spritePhaseReplacements = index == 0 ? spritePhaseReplacements.Skip(chunk * 1000).Take(1000) : spritePhaseReplacements });
+                    spritePresentationReplacements = index == 0 ? spritePresentationReplacements.Skip(chunk * 1000).Take(1000) : spritePresentationReplacements });
             tileCapture?.Capture(index, state.ToSequence.Value, data.ReplayTime[index].Ticks);
         }
         simulation.Stop();
@@ -288,7 +288,7 @@ public sealed partial class CaptureRunner
 
         var summary = new { schema = Program.SummarySchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.LayerPhaseCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.PresentationCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
@@ -312,11 +312,11 @@ public sealed partial class CaptureRunner
                 spriteDefinitionBytes = _spriteDefinitionBytes, previousSpriteReuses = _previousSpriteReuses,
                 sharedSpriteReuses = _sharedSpriteReuses, resourceDefinitions = _resourceDefinitions.Count,
                 uniqueRsiObjectsReferenced = _rsiResourceIds.Count },
-            animationPhases = new { replacements = _phaseReplacements, layerSamples = _phaseLayerSamples,
-                scalarOwnerInspections = _phaseScalarInspections, forcedUpdates = _phaseForceUpdates,
-                independentAppearanceCandidates = _independentAppearanceCandidates, retainedBytes = _phaseRetainedBytes,
-                peakRetainedBytes = _phaseRetainedPeakBytes, maximumFramePhaseJSONBytes = _maximumFramePhaseJSONBytes,
-                retainedOwners = _phaseStates.Count, assertion = _phaseProbe },
+            spritePresentation = new { replacements = _presentationReplacements, layerSamples = _presentationLayerSamples,
+                scalarOwnerInspections = _presentationScalarInspections, forcedUpdates = _ordinaryForceUpdates,
+                independentAppearanceCandidates = _independentAppearanceCandidates, retainedBytes = _presentationRetainedBytes,
+                peakRetainedBytes = _presentationRetainedPeakBytes, maximumFramePresentationJSONBytes = _maximumFramePresentationJSONBytes,
+                retainedOwners = _presentationStates.Count, assertion = _ordinaryPhaseProbe },
             parentClosure = new { ancestorCandidates = _ancestorCandidates, ancestorAdditions = _ancestorAdditions,
                 clientAncestors = _clientAncestors, movedCandidates = _movedCandidates,
                 observedNativeDeletions = _observedDeletions, maximumDepth = _maxParentDepth,
@@ -346,7 +346,7 @@ public sealed partial class CaptureRunner
         else
         {
             _previousSprites.Remove(id);
-            RemovePhaseState(id);
+            RemovePresentationState(id);
         }
         var record = new { id, parentId = transform.ParentUid == EntityUid.Invalid ? (int?) null
                 : _entities.GetNetEntity(transform.ParentUid).Id,

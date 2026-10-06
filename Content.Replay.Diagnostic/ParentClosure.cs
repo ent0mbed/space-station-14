@@ -137,7 +137,7 @@ public sealed partial class CaptureRunner
         if (_fingerprints.Remove(id)) deletes.Add(id);
         _previousSprites.Remove(id);
         _presentationOwners.Remove(id);
-        RemovePhaseState(id);
+        RemovePresentationState(id);
         if (_projectedParents.Remove(id, out var parent) && parent is { } old
             && _projectedChildren.TryGetValue(old, out var children))
         {

@@ -92,7 +92,7 @@ public sealed partial class CaptureRunner
         var ownedPosts = posts.ToArray();
         var bytes = JsonSerializer.SerializeToUtf8Bytes(new {
             head.Visible, head.ContainerOccluded, head.DrawDepth, head.RenderOrder,
-            head.Color, head.Scale, head.Offset, head.Rotation, head.NoRotation, head.SnapCardinals,
+            head.Color, head.Scale, head.Rotation, head.NoRotation, head.SnapCardinals,
             head.EnableDirectionOverride, head.DirectionOverride, head.GranularLayersRendering, head.Loop,
             nativeLocalBounds = head.NativeLocalBounds.ToArray(),
             layers = ownedLayers, postShaders = ownedPosts }, Json);
@@ -124,7 +124,7 @@ public sealed partial class CaptureRunner
 
     private static SpriteHead ReadSpriteHead(SpriteComponent component, BoundsValue bounds)
         => new(component.Visible, component.ContainerOccluded, component.DrawDepth, component.RenderOrder,
-            ColorValue.From(component.Color), VectorValue.From(component.Scale), VectorValue.From(component.Offset),
+            ColorValue.From(component.Color), VectorValue.From(component.Scale),
             component.Rotation.Theta, component.NoRotation, component.SnapCardinals, component.EnableDirectionOverride,
             EnumName(component.DirectionOverride), component.GranularLayersRendering, component.Loop, bounds);
 
@@ -181,7 +181,7 @@ public sealed partial class CaptureRunner
     }
 
     private readonly record struct SpriteHead(bool Visible, bool ContainerOccluded, int DrawDepth,
-        uint RenderOrder, ColorValue Color, VectorValue Scale, VectorValue Offset, double Rotation,
+        uint RenderOrder, ColorValue Color, VectorValue Scale, double Rotation,
         bool NoRotation, bool SnapCardinals, bool EnableDirectionOverride, string DirectionOverride,
         bool GranularLayersRendering, bool Loop, BoundsValue NativeLocalBounds);
 

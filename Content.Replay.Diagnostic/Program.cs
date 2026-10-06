@@ -19,10 +19,10 @@ internal static class Program
     public const string SpriteBoundsCapability = "native-sprite-local-bounds/1";
     public const string TileEdgeCapability = "native-tile-edge-inputs/1";
     public const string FrozenMaterialCapability = "native-frozen-material-snapshots/1";
-    public const string LayerPhaseCapability = "native-rsi-layer-phases/1";
-    public const int MaxPhaseOwners = 250_000;
-    public const int MaxPhaseLayersPerOwner = 256;
-    public const long MaxPhaseRetainedBytes = 64L * 1024 * 1024;
+    public const string PresentationCapability = "native-sprite-presentation-samples/1";
+    public const int MaxPresentationOwners = 250_000;
+    public const int MaxPresentationLayersPerOwner = 256;
+    public const long MaxPresentationRetainedBytes = 64L * 1024 * 1024;
     public static int? AssertPhaseEntity;
     public static int AssertPhaseLayer;
     public const int MaxShaderParameterNameCharacters = 256;
@@ -78,7 +78,7 @@ internal static class Program
                 var parts = phaseProbe.Split(':');
                 if (parts.Length != 2 || !int.TryParse(parts[0], out var entityId)
                     || entityId == 0 || !int.TryParse(parts[1], out var layerIndex)
-                    || layerIndex < 0 || layerIndex >= MaxPhaseLayersPerOwner)
+                    || layerIndex < 0 || layerIndex >= MaxPresentationLayersPerOwner)
                     throw new ArgumentException("Expected --assert-ordinary-phase entityId:layerIndex.");
                 AssertPhaseEntity = entityId;
                 AssertPhaseLayer = layerIndex;
