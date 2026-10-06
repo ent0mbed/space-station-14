@@ -222,8 +222,8 @@ public sealed partial class CaptureRunner
             }
             else
             {
-                // Candidate-driven projection avoids serializing the entire world every tick.
-                // This seam does not yet claim complete tracking of unrelated client-only sprite mutations.
+                // Project network candidates first. The independent scalar pass below detects
+                // presentation changes on retained owners without serializing stable sprites.
                 foreach (var entity in state.EntityStates.Value)
                 {
                     if (!_entities.TryGetEntity(entity.NetEntity, out var uid)

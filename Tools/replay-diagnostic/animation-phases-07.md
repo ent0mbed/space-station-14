@@ -83,6 +83,26 @@ cross-object atomic delta protocol belongs to this slice.
 Optional `--assert-ordinary-phase entityId:layerIndex` asserts runtime SyncSprite
 absence and a valid multi-frame RSI on that owner, without changing native state.
 Completion summary holds bounded scalar samples for this diagnostic assertion.
-The first proof uses one three-second real capture covering both sides of the
-existing two-second package checkpoint cadence. This proves native sampling only;
-Go/web checkpoint/seek integration remains a consumer task.
+The single approved three-second real capture emitted 66 complete frames through
+2.1666645 seconds, then failed the unchanged 128 MiB sprite-definition byte guard.
+The asserted stationary computer retained one sprite ID and advanced its native
+RSI phase, including across two seconds; no completion summary was produced.
+This is partial native sampling evidence only. It is not a completed capture or
+Go/web checkpoint/seek proof.
+
+## Blocking appearance residency finding
+
+Independent scalar inspection correctly discovers continuously animated sprite
+offsets. The existing appearance dictionary then copies each entire layer array
+for every distinct offset. The partial capture contains 10,890 definitions, of
+which 4,875 differ from an earlier definition only in sprite offset; those copies
+consume approximately 118.5 MB of serialized definition JSON. Observed affected
+sprites have 73–103 layers. The unchanged guard rejects the next definition.
+
+Do not omit these native offsets, silently narrow appearance inspection, or raise
+the guard to call this proof complete. Before freezing 0.7 for consumers, resolve
+this residency issue in the source contract. The smallest evidenced extension is
+an owner-local sampled sprite offset, independent of shared layer definitions,
+with baseline/replacement/reset rules and accounting inside combined world and
+checkpoint budgets. It remains a proposed follow-up, not an implemented field in
+this draft. Other changed appearance scalars still use the existing dictionary.
