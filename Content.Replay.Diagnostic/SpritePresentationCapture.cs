@@ -52,16 +52,23 @@ public sealed partial class CaptureRunner
         return true;
     }
 
-    private void QueueOrdinarySprite(EntityUid uid, SpriteComponent component, SpriteSystem system)
+    // The pinned Robust 289.0.3 adapter exposes its backing List through AllLayers.
+    // Read it only within the current pass; never retain native layers across FrameUpdate.
+    private static List<SpriteComponent.Layer> GetNativePresentationLayers(SpriteComponent component)
+        => (List<SpriteComponent.Layer>) component.AllLayers;
+
+    private void QueueOrdinarySprite(EntityUid uid, SpriteComponent component, SpriteSystem system,
+        in EntityQuery<SyncSpriteComponent> syncSprites)
     {
         _queueOwnerVisits++;
-        if (_entities.HasComponent<SyncSpriteComponent>(uid)) return;
-        var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
+        if (syncSprites.HasComponent(uid)) return;
+        var layers = GetNativePresentationLayers(component);
         if (layers.Count > Program.MaxPresentationLayersPerOwner)
             throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
         // Do not inspect cached IsInert. Its queued recomputation happens inside FrameUpdate.
-        foreach (var layer in layers)
+        for (var index = 0; index < layers.Count; index++)
         {
+            var layer = layers[index];
             _queueLayerVisits++;
             if (layer.Visible && layer.AutoAnimated && TryPhaseState(component, layer, out _))
             {
@@ -82,27 +89,31 @@ public sealed partial class CaptureRunner
     private void QueueOrdinaryPhasesCore(Robust.Shared.GameStates.GameState state, bool initial)
     {
         var system = _entities.System<SpriteSystem>();
+        // Pass-local queries keep the native live-dictionary lookup and Deleted check.
+        var sprites = _entities.GetEntityQuery<SpriteComponent>();
+        var metadataQuery = _entities.GetEntityQuery<MetaDataComponent>();
+        var syncSprites = _entities.GetEntityQuery<SyncSpriteComponent>();
         if (initial)
         {
             var query = _entities.EntityQueryEnumerator<SpriteComponent, MetaDataComponent>();
             while (query.MoveNext(out var uid, out var sprite, out var metadata))
                 if (!metadata.NetEntity.IsClientSide() && metadata.EntityLifeStage >= EntityLifeStage.Initialized
                     && metadata.EntityLifeStage < EntityLifeStage.Terminating)
-                    QueueOrdinarySprite(uid, sprite, system);
+                    QueueOrdinarySprite(uid, sprite, system, in syncSprites);
             return;
         }
         foreach (var uid in _presentationOwners.Values)
-            if (_entities.TryGetComponent<SpriteComponent>(uid, out var sprite)
-                && _entities.TryGetComponent<MetaDataComponent>(uid, out var metadata)
+            if (sprites.TryGetComponent(uid, out var sprite)
+                && metadataQuery.TryGetComponent(uid, out var metadata)
                 && metadata.EntityLifeStage >= EntityLifeStage.Initialized
                 && metadata.EntityLifeStage < EntityLifeStage.Terminating)
-                QueueOrdinarySprite(uid, sprite, system);
+                QueueOrdinarySprite(uid, sprite, system, in syncSprites);
         // New exported network owners need their first native tick, too.
         foreach (var entity in state.EntityStates.Value)
             if (!_presentationOwners.ContainsKey(entity.NetEntity.Id)
                 && _entities.TryGetEntity(entity.NetEntity, out var uid)
-                && _entities.TryGetComponent<SpriteComponent>(uid, out var sprite))
-                QueueOrdinarySprite(uid.Value, sprite, system);
+                && sprites.TryGetComponent(uid, out var sprite))
+                QueueOrdinarySprite(uid.Value, sprite, system, in syncSprites);
     }
 
     private void InspectSpritePresentation(bool inspectAppearance)
@@ -112,26 +123,29 @@ public sealed partial class CaptureRunner
         _pendingPresentation.Clear();
         _pendingPresentationOrder.Clear();
         _pendingPresentationBytes = 0;
+        var sprites = _entities.GetEntityQuery<SpriteComponent>();
+        var metadataQuery = _entities.GetEntityQuery<MetaDataComponent>();
+        var syncSprites = _entities.GetEntityQuery<SyncSpriteComponent>();
         foreach (var (id, uid) in _presentationOwners)
         {
             _postOwnerVisits++;
             _presentationScalarInspections++;
-            if (!_entities.TryGetComponent<MetaDataComponent>(uid, out var metadata)
+            if (!metadataQuery.TryGetComponent(uid, out var metadata)
                 || metadata.EntityLifeStage >= EntityLifeStage.Terminating)
                 throw new InvalidDataException($"Retained presentation owner {id} disappeared without observed deletion.");
-            if (!_entities.TryGetComponent<SpriteComponent>(uid, out var component))
+            if (!sprites.TryGetComponent(uid, out var component))
             {
                 if (inspectAppearance && _previousSprites.ContainsKey(id)) _appearanceCandidates.Add((id, uid));
                 continue;
             }
-            var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
+            var layers = GetNativePresentationLayers(component);
             if (layers.Count > _phaseScratch.Length) throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
             var spriteId = _previousSprites.GetValueOrDefault(id);
             var definition = spriteId == 0 ? null : _spriteDefinitions[spriteId - 1];
             var matches = !inspectAppearance || definition != null
                 && ReadSpriteHead(component, definition.Head.NativeLocalBounds) == definition.Head
                 && layers.Count == definition.Layers.Length;
-            var reason = _entities.HasComponent<SyncSpriteComponent>(uid) ? "native-realtime-sync" : null;
+            var reason = syncSprites.HasComponent(uid) ? "native-realtime-sync" : null;
             var count = 0;
             for (var index = 0; index < layers.Count; index++)
             {
