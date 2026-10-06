@@ -87,6 +87,10 @@ public sealed partial class CaptureRunner
 
     private async Task CaptureAsync()
     {
+        // EntryPoint invokes us synchronously from FramePostEngine. Pinned RSI
+        // preload workers have joined; live sprite/RSI mutation and all inspection
+        // must remain serial on this thread. Atomic stamps are not synchronization.
+        var ownerThread = Environment.CurrentManagedThreadId;
         var startupMs = Program.Total.Elapsed.TotalMilliseconds;
         var startupAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - Program.AllocatedAtStart;
         _configuration.SetCVar(CVars.ReplayIgnoreErrors, false);
@@ -105,10 +109,12 @@ public sealed partial class CaptureRunner
             throw new InvalidDataException("Matching reader network component hash mismatch.");
         var data = await ((ReplayLoadManager) _loader).LoadReplayClipAsync(reader,
             (_, _, _, _) => Task.CompletedTask, TimeSpan.FromSeconds(Program.Seconds), native);
+        AnimationEligibility.RequireOwnerThread(ownerThread);
         var loadMs = loadTimer.Elapsed.TotalMilliseconds;
         var loadedAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true);
         var startTimer = Stopwatch.StartNew();
         await _loader.StartReplayAsync(data, (_, _, _, _) => Task.CompletedTask);
+        AnimationEligibility.RequireOwnerThread(ownerThread);
         var initializeMs = startTimer.Elapsed.TotalMilliseconds;
         _captureTransformSystem = _entities.System<SharedTransformSystem>();
         _captureTransformSystem.OnGlobalMoveEvent += OnNativeMove;

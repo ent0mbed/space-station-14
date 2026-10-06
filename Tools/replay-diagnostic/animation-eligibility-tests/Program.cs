@@ -8,6 +8,7 @@ using Robust.Client.Graphics;
 using Robust.Client.ResourceManagement;
 using Robust.Shared.GameObjects;
 using Robust.Shared.Graphics.RSI;
+using Robust.Shared.Log;
 using Robust.Shared.Maths;
 using Robust.Shared.Utility;
 
@@ -72,16 +73,18 @@ var options = typeof(CaptureRunner).Assembly.GetType("Content.Replay.Diagnostic.
 var strategy = options.GetField("OrdinaryAnimationEligibility", BindingFlags.Static | BindingFlags.Public)!;
 void Mode(string mode) => strategy.SetValue(null, Enum.Parse(strategy.FieldType, mode));
 long Visits() => (long) typeof(CaptureRunner).GetField("_queueLayerVisits", Private)!.GetValue(runner)!;
-bool Queue(SpriteComponent sprite)
+object EligibilityOwner(SpriteComponent sprite) => Activator.CreateInstance(ownerRecord.GetType(),
+    Private | BindingFlags.Public, null, [sprite.Owner], null)!;
+bool Queue(SpriteComponent sprite, object? eligibilityOwner = null)
 {
     queued.Clear();
-    Call(runner, "QueueOrdinarySprite", sprite.Owner, sprite, system, syncQuery, ownerRecord);
+    Call(runner, "QueueOrdinarySprite", sprite.Owner, sprite, system, syncQuery, eligibilityOwner ?? ownerRecord);
     return queued.Contains(sprite.Owner);
 }
-void Parity(SpriteComponent sprite, bool expected, string message)
+void Parity(SpriteComponent sprite, bool expected, string message, object? eligibilityOwner = null)
 {
-    Mode("Reference"); var reference = Queue(sprite);
-    Mode("Cached"); var cached = Queue(sprite);
+    Mode("Reference"); var reference = Queue(sprite, eligibilityOwner);
+    Mode("Cached"); var cached = Queue(sprite, eligibilityOwner);
     Check(reference == expected && cached == reference, message);
 }
 
@@ -211,6 +214,109 @@ visits = Visits();
 Check(Queue(sprite) && Visits() > visits, "Live SyncSprite removal reused a suppressed membership.");
 visits = Visits(); Call(runner, "ResetAnimationEligibility"); Queue(sprite);
 Check(Visits() > visits, "World/checkpoint reset retained cached eligibility.");
+
+// AllLayers no longer permits same-count replacement or collection mutation.
+var viewSprite = Sprite(new EntityUid(110), animated);
+var view = viewSprite.AllLayers;
+var originalLayer = viewSprite.Layers[0];
+Check(view is not List<SpriteComponent.Layer>, "Public view still exposes the mutable backing list.");
+var readOnly = (IList<SpriteComponent.Layer>) view;
+Check(readOnly.IsReadOnly, "The public collection accepts structural mutation.");
+try { readOnly[0] = new SpriteComponent.Layer(); throw new InvalidOperationException("Same-count replacement accepted."); }
+catch (NotSupportedException) { checks++; }
+try { readOnly.Add(new SpriteComponent.Layer()); throw new InvalidOperationException("Public collection insertion accepted."); }
+catch (NotSupportedException) { checks++; }
+Check(readOnly.Count == 1 && ReferenceEquals(readOnly[0], originalLayer), "Rejected writes altered native membership.");
+Check(ReferenceEquals(viewSprite.GetReplayAnimationLayers(1)[0], originalLayer), "Read-only traversal changed layer identity.");
+var allocatedBeforeReads = GC.GetAllocatedBytesForCurrentThread();
+var sameView = true;
+var traversed = 0;
+for (var i = 0; i < 1000; i++)
+{
+    sameView &= ReferenceEquals(view, viewSprite.AllLayers);
+    traversed += viewSprite.GetReplayAnimationLayers(1).Length;
+}
+Check(sameView && traversed == 1000 && GC.GetAllocatedBytesForCurrentThread() == allocatedBeforeReads,
+    "Repeated public/span reads allocated or replaced the wrapper.");
+var viewBlank = system.AddBlankLayer((viewSprite.Owner, viewSprite));
+Check(readOnly.Count == 2 && ReferenceEquals(readOnly[1], viewBlank), "Existing view stopped observing native list edits.");
+var emptyViewSource = new SpriteComponent { Owner = new EntityUid(111) };
+system.CopySprite((emptyViewSource.Owner, emptyViewSource), (viewSprite.Owner, viewSprite));
+Check(!ReferenceEquals(view, viewSprite.AllLayers) && !viewSprite.AllLayers.Any()
+    && readOnly.Count == 2 && ReferenceEquals(readOnly[0], originalLayer),
+    "CopySprite changed captured-view semantics or left a stale current view.");
+Check(viewSprite.GetReplayAnimationLayers(0).IsEmpty, "An empty sprite did not fit the zero-layer traversal budget.");
+try { viewSprite.GetReplayAnimationLayers(-1); throw new InvalidOperationException("Negative traversal budget accepted."); }
+catch (ArgumentOutOfRangeException) { checks++; }
+
+// AddLayer preserves native aliasing, but both owners permanently full-scan.
+var aliasA = Sprite(new EntityUid(112), animated, visible: false);
+var aliasB = Sprite(new EntityUid(113), animated, visible: false);
+var entryA = EligibilityOwner(aliasA);
+var entryB = EligibilityOwner(aliasB);
+Check(!Queue(aliasA, entryA), "Alias source fixture must initially be ineligible.");
+var shared = aliasA.Layers[0];
+var aliasIndex = system.AddLayer((aliasB.Owner, aliasB), shared);
+Check(aliasA.Layers.Count == 1 && aliasB.Layers.Count == 2 && aliasIndex == 1
+    && ReferenceEquals(aliasA.Layers[0], aliasB.Layers[aliasIndex]) && ReferenceEquals(shared.Owner.Comp, aliasB),
+    "The fix changed native alias insertion or reassignment semantics.");
+Check(!aliasA.ReplayAnimationEligibilityCacheSafe && !aliasB.ReplayAnimationEligibilityCacheSafe,
+    "An affected alias owner can still cache eligibility.");
+Check(!Queue(aliasA, entryA) && !Queue(aliasB, entryB), "Hidden alias fixture unexpectedly animated.");
+var oldOwnerRevision = aliasA.ReplayAnimationEligibilityRevision;
+system.LayerSetVisible(shared, true);
+Check(aliasA.ReplayAnimationEligibilityRevision == oldOwnerRevision,
+    "The regression must exercise the native missing old-owner notification.");
+Parity(aliasA, true, "Old alias owner reused its stale hidden classification.", entryA);
+Parity(aliasB, true, "New alias owner failed reference selection.", entryB);
+visits = Visits(); Queue(aliasA, entryA); Queue(aliasA, entryA);
+Check(Visits() == visits + 2, "Stable alias owner resumed caching.");
+shared.AutoAnimated = false;
+Parity(aliasA, false, "Legacy shared-layer mutation left old owner active.", entryA);
+shared.AutoAnimated = true;
+system.LayerSetRsi(shared, Rsi(1));
+Parity(aliasA, false, "Shared RSI replacement left old owner active.", entryA);
+system.LayerSetRsi(shared, animated);
+Check(system.RemoveLayer((aliasB.Owner, aliasB), aliasIndex, out var removedShared)
+    && ReferenceEquals(removedShared, shared) && shared.Owner.Comp == null
+    && ReferenceEquals(aliasA.Layers[0], shared), "Native alias removal semantics changed.");
+var aliasC = Sprite(new EntityUid(114), animated, visible: false);
+system.AddLayer((aliasC.Owner, aliasC), shared);
+Check(!aliasC.ReplayAnimationEligibilityCacheSafe, "Alias history was lost after removal and re-addition.");
+var entryC = EligibilityOwner(aliasC);
+Parity(aliasC, true, "Re-added shared layer differs from reference.", entryC);
+Call(runner, "ResetAnimationEligibility");
+system.CopySprite((emptyViewSource.Owner, emptyViewSource), (aliasA.Owner, aliasA));
+Check(!aliasA.ReplayAnimationEligibilityCacheSafe && !aliasB.ReplayAnimationEligibilityCacheSafe
+    && !aliasC.ReplayAnimationEligibilityCacheSafe, "Reset or reconstruction re-enabled an affected instance.");
+var freshCopy = Sprite(new EntityUid(115), animated);
+system.CopySprite((aliasC.Owner, aliasC), (freshCopy.Owner, freshCopy));
+Check(freshCopy.ReplayAnimationEligibilityCacheSafe && !freshCopy.Layers[1].ReplayAnimationWasShared
+    && !ReferenceEquals(freshCopy.Layers[1], shared), "Independent clones inherited alias fallback.");
+
+// Failed AddLayer still clears Owner in native code while the prior list retains it.
+var missingManager = new ClientEntityManager();
+missingManager.MetaQuery = (EntityQuery<MetaDataComponent>) Activator.CreateInstance(typeof(EntityQuery<MetaDataComponent>),
+    Private, null, [missingManager, new Dictionary<EntityUid, IComponent>()], null)!;
+using var missingLogs = new LogManager();
+typeof(EntityManager).GetField("ResolveSawmill", Private)!.SetValue(missingManager, missingLogs.GetSawmill("resolve"));
+Inject(system, "_query", Activator.CreateInstance(typeof(EntityQuery<SpriteComponent>),
+    Private, null, [missingManager, new Dictionary<EntityUid, IComponent>()], null)!);
+var failedOwner = Sprite(new EntityUid(116), animated);
+var failedLayer = failedOwner.Layers[0];
+Check(system.AddLayer((new EntityUid(117), (SpriteComponent?) null), failedLayer) == -1
+    && failedLayer.Owner.Comp == null && failedLayer.Index == -1
+    && ReferenceEquals(failedOwner.Layers[0], failedLayer) && !failedOwner.ReplayAnimationEligibilityCacheSafe,
+    "Failed reassignment changed semantics or left the prior owner caching.");
+
+// Inspection remains on its engine owner thread. This does not guard native writers.
+var ownerThread = Environment.CurrentManagedThreadId;
+AnimationEligibility.RequireOwnerThread(ownerThread);
+Check(Task.Run(() =>
+{
+    try { AnimationEligibility.RequireOwnerThread(ownerThread); return false; }
+    catch (InvalidOperationException) { return true; }
+}).GetAwaiter().GetResult(), "Off-thread inspection was accepted.");
 
 // Count enforcement precedes cache lookup, even for an already eligible owner.
 for (var i = sprite.Layers.Count; i < 257; i++)

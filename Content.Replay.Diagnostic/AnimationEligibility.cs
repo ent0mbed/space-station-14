@@ -4,6 +4,12 @@ internal enum AnimationEligibilityStrategy { Reference, Cached }
 
 internal static class AnimationEligibility
 {
+    public static void RequireOwnerThread(int threadId)
+    {
+        if (Environment.CurrentManagedThreadId != threadId)
+            throw new InvalidOperationException("Replay inspection must stay on its owning engine thread.");
+    }
+
     public static AnimationEligibilityStrategy Parse(string? value) => value switch
     {
         null or "reference" => AnimationEligibilityStrategy.Reference,

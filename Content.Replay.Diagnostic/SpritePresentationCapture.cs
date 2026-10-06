@@ -64,10 +64,10 @@ public sealed partial class CaptureRunner
         return true;
     }
 
-    // The pinned Robust 289.0.3 adapter exposes its backing List through AllLayers.
-    // Read it only within the current pass; never retain native layers across FrameUpdate.
-    private static List<SpriteComponent.Layer> GetNativePresentationLayers(SpriteComponent component)
-        => (List<SpriteComponent.Layer>) component.AllLayers;
+    // The patched engine enforces the cap before returning this read-only span.
+    // Consume immediately on the owning thread; never retain it across mutation.
+    private static ReadOnlySpan<SpriteComponent.Layer> GetNativePresentationLayers(SpriteComponent component)
+        => component.GetReplayAnimationLayers(Program.MaxPresentationLayersPerOwner);
 
     private void QueueOrdinarySprite(EntityUid uid, SpriteComponent component, SpriteSystem system,
         in EntityQuery<SyncSpriteComponent> syncSprites, PresentationOwner? owner = null)
@@ -79,23 +79,23 @@ public sealed partial class CaptureRunner
             return;
         }
         var layers = GetNativePresentationLayers(component);
-        if (layers.Count > Program.MaxPresentationLayersPerOwner)
-            throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
         bool eligible;
-        if (Program.OrdinaryAnimationEligibility == AnimationEligibilityStrategy.Cached && owner != null)
+        if (Program.OrdinaryAnimationEligibility == AnimationEligibilityStrategy.Cached && owner != null
+            && component.ReplayAnimationEligibilityCacheSafe)
         {
-            var before = ReadEligibilityStamp(component, layers.Count);
+            var before = ReadEligibilityStamp(component, layers.Length);
             if (!owner.Eligibility.TryGet(before, out eligible))
             {
                 eligible = ScanOrdinaryEligibility(component, layers);
-                // A racing resource load/mutation must not publish a stale cached
-                // result. The current selection still uses the reference scan result.
+                // Invalidation during a scan prevents entry publication. This is
+                // not collection synchronization; the owning thread must stay serial.
                 owner.Eligibility = AnimationEligibilityEntry.AfterScan(before,
-                    ReadEligibilityStamp(component, layers.Count), eligible);
+                    ReadEligibilityStamp(component, layers.Length), eligible);
             }
         }
         else
         {
+            if (owner != null) owner.Eligibility = default;
             eligible = ScanOrdinaryEligibility(component, layers);
         }
         if (!eligible) return;
@@ -107,10 +107,10 @@ public sealed partial class CaptureRunner
         => new(component.ReplayAnimationIdentity, component.ReplayAnimationEligibilityRevision,
             RSI.ReplayAnimationStateEpoch, layerCount);
 
-    private bool ScanOrdinaryEligibility(SpriteComponent component, List<SpriteComponent.Layer> layers)
+    private bool ScanOrdinaryEligibility(SpriteComponent component, ReadOnlySpan<SpriteComponent.Layer> layers)
     {
         // Do not inspect cached IsInert. Its queued recomputation happens inside FrameUpdate.
-        for (var index = 0; index < layers.Count; index++)
+        for (var index = 0; index < layers.Length; index++)
         {
             var layer = layers[index];
             _queueLayerVisits++;
@@ -186,15 +186,14 @@ public sealed partial class CaptureRunner
                 continue;
             }
             var layers = GetNativePresentationLayers(component);
-            if (layers.Count > _phaseScratch.Length) throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
             var spriteId = _previousSprites.GetValueOrDefault(id);
             var definition = spriteId == 0 ? null : _spriteDefinitions[spriteId - 1];
             var matches = !inspectAppearance || definition != null
                 && ReadSpriteHead(component, definition.Head.NativeLocalBounds) == definition.Head
-                && layers.Count == definition.Layers.Length;
+                && layers.Length == definition.Layers.Length;
             var reason = syncSprites.HasComponent(uid) ? "native-realtime-sync" : null;
             var count = 0;
-            for (var index = 0; index < layers.Count; index++)
+            for (var index = 0; index < layers.Length; index++)
             {
                 _postLayerVisits++;
                 var layer = layers[index];
@@ -202,7 +201,7 @@ public sealed partial class CaptureRunner
                 {
                     _appearanceLayerComparisons++;
                     if (!TryReadCapturedMaterial(layer.Shader, out var material)
-                        || ReadLayerValue(uid, component, layer, index, layers.Count, material) != definition!.Layers[index])
+                        || ReadLayerValue(uid, component, layer, index, layers.Length, material) != definition!.Layers[index])
                         matches = false;
                 }
                 if (reason == null)
@@ -275,13 +274,12 @@ public sealed partial class CaptureRunner
             var uid = owner.Uid;
             if (!_previousSprites.TryGetValue(id, out var spriteId)
                 || !_entities.TryGetComponent<SpriteComponent>(uid, out var component)) continue;
-            var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
-            if (layers.Count > _phaseScratch.Length) throw new InvalidDataException("Diagnostic sprite layer budget exceeded.");
+            var layers = GetNativePresentationLayers(component);
             // Offset is available for every sprite, independently of RSI phase coverage.
             var offset = VectorValue.From(component.Offset);
             var reason = _entities.HasComponent<SyncSpriteComponent>(uid) ? "native-realtime-sync" : null;
             var count = 0;
-            for (var index = 0; reason == null && index < layers.Count; index++)
+            for (var index = 0; reason == null && index < layers.Length; index++)
             {
                 _baselineLayerVisits++;
                 ReadPhaseLayer(id, component, layers[index], index, ref count);
@@ -365,9 +363,9 @@ public sealed partial class CaptureRunner
         var uid = owner.Uid;
         if (_entities.HasComponent<SyncSpriteComponent>(uid))
             throw new InvalidDataException($"Asserted ordinary phase owner {id} has runtime SyncSprite.");
-        var layers = (IReadOnlyList<SpriteComponent.Layer>) component.AllLayers;
+        var layers = GetNativePresentationLayers(component);
         var index = Program.AssertPhaseLayer;
-        if (index >= layers.Count || !TryPhaseState(component, layers[index], out var state))
+        if (index >= layers.Length || !TryPhaseState(component, layers[index], out var state))
             throw new InvalidDataException($"Asserted phase layer {id}:{index} has no valid multi-frame RSI.");
         if (_ordinaryPhaseProbe.Count >= 128) throw new InvalidDataException("Phase assertion sample budget exceeded; choose a short clip.");
         var layer = layers[index];
