@@ -10,9 +10,8 @@ public sealed partial class CaptureRunner
 {
     private readonly Dictionary<ReplayShaderSnapshot, MaterialBinding> _materialSnapshots = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, MaterialBinding> _materialIdentities = new(StringComparer.Ordinal);
-    private readonly List<object> _materialDefinitions = new();
+    private readonly DefinitionStore<object> _materialDefinitions = new(new());
     private readonly Dictionary<string, int> _materialUnavailable = new(StringComparer.Ordinal);
-    private int _emittedMaterials;
     private long _materialDefinitionBytes;
 
     private MaterialBinding CaptureMaterial(ShaderInstance? shader)
@@ -68,10 +67,11 @@ public sealed partial class CaptureRunner
             if (_materialDefinitions.Count >= Program.MaxMaterialDefinitions
                 || _materialDefinitionBytes + bytes.Length > Program.MaxMaterialDefinitionBytes)
                 throw new InvalidDataException("Interned material-definition budget exceeded.");
-            binding = new(_materialDefinitions.Count + 1, null, unavailable.Count != 0 || stencil.Enabled);
             // Definitions own serialized copies; no entity or mutable shader instances are retained.
-            _materialDefinitions.Add(new { kind = "material-definition", materialId = binding.MaterialId,
-                value = JsonSerializer.Deserialize<JsonElement>(bytes) });
+            var id = _materialDefinitions.Add(bytes, static (definitionId, ownedBytes) => new {
+                kind = "material-definition", materialId = (int?) definitionId,
+                value = JsonSerializer.Deserialize<JsonElement>(ownedBytes) });
+            binding = new(id, null, unavailable.Count != 0 || stencil.Enabled);
             _materialDefinitionBytes += bytes.Length;
             _materialIdentities.Add(identity, binding);
         }
@@ -129,10 +129,8 @@ public sealed partial class CaptureRunner
 
     private void WriteShaderDefinitions()
     {
-        while (_emittedShaderSources < _shaderSourceDefinitions.Count)
-            Write(_shaderSourceDefinitions[_emittedShaderSources++]);
-        while (_emittedMaterials < _materialDefinitions.Count)
-            Write(_materialDefinitions[_emittedMaterials++]);
+        _shaderSourceDefinitions.WritePending(Write);
+        _materialDefinitions.WritePending(Write);
     }
 
     private readonly record struct MaterialBinding(int? MaterialId, string? UnavailableReason, bool ParametersUnavailable);

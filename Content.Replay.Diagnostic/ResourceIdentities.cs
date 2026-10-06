@@ -8,8 +8,7 @@ public sealed partial class CaptureRunner
     private static readonly object BodyMetadata = new { bodyUnavailable = true };
     private readonly Dictionary<(string Kind, string Path), int> _resourceIds = new();
     private readonly Dictionary<RSI, int> _rsiResourceIds = new(ReferenceEqualityComparer.Instance);
-    private readonly List<object> _resourceDefinitions = new();
-    private int _emittedResources;
+    private readonly DefinitionStore<object> _resourceDefinitions = new(new());
 
     private int EnsureResource(string resourceKind, string path, object metadata)
     {
@@ -17,10 +16,11 @@ public sealed partial class CaptureRunner
             return id;
         if (_resourceDefinitions.Count >= Program.MaxResourceDefinitions)
             throw new InvalidDataException("Diagnostic resource-definition count budget exceeded.");
-        id = _resourceDefinitions.Count + 1;
+        id = _resourceDefinitions.Add((resourceKind, path, metadata), static (definitionId, state) => new {
+            kind = "resource-definition", resourceId = definitionId,
+            resourceKind = state.resourceKind, path = state.path,
+            gameBuild = Program.GameBuild, bundleSha256 = Program.ResourceBundleSha256, metadata = state.metadata });
         _resourceIds.Add((resourceKind, path), id);
-        _resourceDefinitions.Add(new { kind = "resource-definition", resourceId = id,
-            resourceKind, path, gameBuild = Program.GameBuild, bundleSha256 = Program.ResourceBundleSha256, metadata });
         return id;
     }
 
@@ -41,7 +41,6 @@ public sealed partial class CaptureRunner
 
     private void WriteResourceDefinitions()
     {
-        while (_emittedResources < _resourceDefinitions.Count)
-            Write(_resourceDefinitions[_emittedResources++]);
+        _resourceDefinitions.WritePending(Write);
     }
 }

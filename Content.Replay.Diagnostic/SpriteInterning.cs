@@ -9,11 +9,10 @@ public sealed partial class CaptureRunner
     // These buffers contain export values, never mutable native layer/shader instances.
     private readonly LayerValue[] _layerScratch = new LayerValue[256];
     private readonly PostShaderValue[] _postScratch = new PostShaderValue[64];
-    private readonly List<SpriteDefinition> _spriteDefinitions = new();
+    private readonly DefinitionStore<SpriteDefinition> _spriteDefinitions = new(new());
     private readonly Dictionary<int, List<SpriteDefinition>> _spriteBuckets = new();
     private readonly Dictionary<int, int> _previousSprites = new();
     private long _spriteDefinitionBytes;
-    private int _emittedSprites;
     private int _spriteCandidates;
     private int _previousSpriteReuses;
     private int _sharedSpriteReuses;
@@ -64,7 +63,7 @@ public sealed partial class CaptureRunner
         // BoundsDirty and PostShaderOrderDirty are not complete visual revisions. Compare the actual
         // projected values after native presentation; no speculative network-dirty shortcut.
         if (_previousSprites.TryGetValue(entityId, out var previous)
-            && _spriteDefinitions[previous - 1].Matches(head, layers, posts))
+            && _spriteDefinitions.Get(previous).Matches(head, layers, posts))
         {
             _previousSpriteReuses++;
             return previous;
@@ -96,8 +95,9 @@ public sealed partial class CaptureRunner
             layers = ownedLayers, postShaders = ownedPosts }, Json);
         if (_spriteDefinitionBytes + bytes.Length > Program.MaxSpriteDefinitionBytes)
             throw new InvalidDataException("Diagnostic sprite-definition byte budget exceeded.");
-        var definition = new SpriteDefinition(_spriteDefinitions.Count + 1, head, ownedLayers, ownedPosts, bytes);
-        _spriteDefinitions.Add(definition);
+        var id = _spriteDefinitions.Add((head, ownedLayers, ownedPosts, bytes), static (definitionId, state) =>
+            new SpriteDefinition(definitionId, state.head, state.ownedLayers, state.ownedPosts, state.bytes));
+        var definition = _spriteDefinitions.Get(id);
         (_spriteBuckets.TryGetValue(key, out bucket) ? bucket : _spriteBuckets[key] = new()).Add(definition);
         _spriteDefinitionBytes += bytes.Length;
         _previousSprites[entityId] = definition.Id;
@@ -139,24 +139,25 @@ public sealed partial class CaptureRunner
 
     private void WriteSpriteDefinitions()
     {
-        while (_emittedSprites < _spriteDefinitions.Count)
+        _spriteDefinitions.WritePending(WriteSpriteDefinition);
+    }
+
+    private void WriteSpriteDefinition(SpriteDefinition definition)
+    {
+        CheckOutputBudget(definition.Bytes.Length + 128);
+        var start = System.Diagnostics.Stopwatch.GetTimestamp();
+        using (var writer = new Utf8JsonWriter(_output))
         {
-            var definition = _spriteDefinitions[_emittedSprites++];
-            CheckOutputBudget(definition.Bytes.Length + 128);
-            var start = System.Diagnostics.Stopwatch.GetTimestamp();
-            using (var writer = new Utf8JsonWriter(_output))
-            {
-                writer.WriteStartObject();
-                writer.WriteString("kind", "sprite-definition");
-                writer.WriteNumber("spriteId", definition.Id);
-                writer.WritePropertyName("value");
-                writer.WriteRawValue(definition.Bytes, skipInputValidation: true);
-                writer.WriteEndObject();
-                writer.Flush();
-            }
-            _output.WriteByte((byte) '\n');
-            _outputMs += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            writer.WriteStartObject();
+            writer.WriteString("kind", "sprite-definition");
+            writer.WriteNumber("spriteId", definition.Id);
+            writer.WritePropertyName("value");
+            writer.WriteRawValue(definition.Bytes, skipInputValidation: true);
+            writer.WriteEndObject();
+            writer.Flush();
         }
+        _output.WriteByte((byte) '\n');
+        _outputMs += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
     }
 
     private sealed record SpriteDefinition(int Id, SpriteHead Head, LayerValue[] Layers,

@@ -186,7 +186,7 @@ public sealed partial class CaptureRunner
             }
             var layers = GetNativePresentationLayers(component);
             var spriteId = _previousSprites.GetValueOrDefault(id);
-            var definition = spriteId == 0 ? null : _spriteDefinitions[spriteId - 1];
+            var definition = spriteId == 0 ? null : _spriteDefinitions.Get(spriteId);
             var matches = !inspectAppearance || definition != null
                 && ReadSpriteHead(component, definition.Head.NativeLocalBounds) == definition.Head
                 && layers.Length == definition.Layers.Length;

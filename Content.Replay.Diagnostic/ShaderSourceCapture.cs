@@ -13,10 +13,9 @@ public sealed partial class CaptureRunner
     private readonly Dictionary<ReplayShaderProgram, int> _shaderPrograms = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, int> _shaderSourceIdentities = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ShaderFile> _shaderFiles = new(StringComparer.Ordinal);
-    private readonly List<object> _shaderSourceDefinitions = new();
+    private readonly DefinitionStore<object> _shaderSourceDefinitions = new(new());
     private ZipArchive? _shaderBundle;
     private ShaderFile[]? _engineShaderInputs;
-    private int _emittedShaderSources;
     private long _shaderSourceDefinitionBytes;
 
     private int EnsureShaderSource(ReplayShaderProgram program)
@@ -43,9 +42,9 @@ public sealed partial class CaptureRunner
             if (_shaderSourceDefinitions.Count >= Program.MaxShaderSourceDefinitions
                 || _shaderSourceDefinitionBytes + bytes.Length > Program.MaxShaderSourceDefinitionBytes)
                 throw new InvalidDataException("Shader source-definition budget exceeded.");
-            id = _shaderSourceDefinitions.Count + 1;
-            _shaderSourceDefinitions.Add(new { kind = "shader-source-definition", shaderSourceId = id,
-                value = new { identitySha256 = identity, program = sourceProgram } });
+            id = _shaderSourceDefinitions.Add((identity, sourceProgram), static (definitionId, state) => new {
+                kind = "shader-source-definition", shaderSourceId = definitionId,
+                value = new { identitySha256 = state.identity, program = state.sourceProgram } });
             _shaderSourceIdentities.Add(identity, id);
             _shaderSourceDefinitionBytes += bytes.Length;
         }
