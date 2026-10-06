@@ -136,6 +136,7 @@ public sealed partial class CaptureRunner
 
     private void RemoveProjection(int id, List<int> deletes, List<object> audioEvents)
     {
+        if (Program.CaptureLighting) _lightingGraphMaps.Remove(id);
         if (_fingerprints.Remove(id)) deletes.Add(id);
         _previousSprites.Remove(id);
         _presentationOwners.Remove(id);

@@ -141,9 +141,9 @@ public sealed partial class CaptureRunner
             ? new NativeTileCapture(_entities, _resources, _tileDefinitions, _configuration, _fingerprints.ContainsKey, _sourceClockOrigin)
             : null;
         _output = output;
-        Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
+        var header = new { kind = "diagnostic-header", schema = Program.SceneSchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.PresentationCapability, Program.LayerBlankCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = Program.RequiredCapabilities, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
             spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
@@ -167,7 +167,8 @@ public sealed partial class CaptureRunner
                 .OrderBy(assembly => assembly.GetName().Name)
                 .Select(assembly => new { name = assembly.GetName().Name,
                     version = assembly.GetName().Version?.ToString(),
-                    moduleVersionId = assembly.ManifestModule.ModuleVersionId }).ToArray() });
+                    moduleVersionId = assembly.ManifestModule.ModuleVersionId }).ToArray() };
+        Write(header);
         tileCapture?.Start(Program.Output, data.Count, data.TickOffset.Value, roundId);
 
         var simulation = Stopwatch.StartNew();
@@ -245,9 +246,11 @@ public sealed partial class CaptureRunner
                     ProjectNative(uid.Value, upserts, audioEvents, false);
                 }
             }
+            var lighting = Program.CaptureLighting ? CaptureLighting(upserts, audioEvents, index == 0) : null;
             InspectSpritePresentation(index > 0);
             if (index > 0) ProjectPresentationAppearance(upserts, audioEvents);
             ProjectMoved(upserts, audioEvents, index == 0);
+            if (Program.CaptureLighting) ValidateLightingClosure();
             var spritePresentationReplacements = FinishSpritePresentation(data.ReplayTime[index].Ticks, index);
             if (index == 0)
                 _initialEntities = upserts.Count;
@@ -259,14 +262,26 @@ public sealed partial class CaptureRunner
             WriteSpriteDefinitions();
             // The initial native world is large. Keep JSONL records bounded without dropping entities.
             var chunkCount = index == 0 ? Math.Max((upserts.Count + 999) / 1000, (spritePresentationReplacements.Count + 999) / 1000) : 1;
+            if (lighting != null && index == 0)
+                chunkCount = Math.Max(1, Math.Max(chunkCount, Math.Max((lighting.PointReplacements.Count + 999) / 1000,
+                    (lighting.MapReplacements.Count + 999) / 1000)));
             for (var chunk = 0; chunk < chunkCount; chunk++)
-                Write(new { kind = index == 0 ? "snapshot" : "delta", sequence = index,
+            {
+                var frame = new { kind = index == 0 ? "snapshot" : "delta", sequence = index,
                     chunkIndex = chunk, chunkCount,
                     sourceTick = state.ToSequence.Value, sourceTime100ns = data.ReplayTime[index].Ticks,
                     sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
                     upserts = index == 0 ? upserts.Skip(chunk * 1000).Take(1000) : upserts,
                     deletes, audioEvents = chunk == 0 ? audioEvents : [],
-                    spritePresentationReplacements = index == 0 ? spritePresentationReplacements.Skip(chunk * 1000).Take(1000) : spritePresentationReplacements });
+                    spritePresentationReplacements = index == 0 ? spritePresentationReplacements.Skip(chunk * 1000).Take(1000) : spritePresentationReplacements };
+                if (lighting != null)
+                    Write(new { frame.kind, frame.sequence, frame.chunkIndex, frame.chunkCount,
+                        frame.sourceTick, frame.sourceTime100ns, frame.sourceServerTime100ns,
+                        frame.upserts, frame.deletes, frame.audioEvents, frame.spritePresentationReplacements,
+                        lighting = lighting.Chunk(chunk, index == 0) });
+                else
+                    Write(frame);
+            }
             tileCapture?.Capture(index, state.ToSequence.Value, data.ReplayTime[index].Ticks);
         }
         simulation.Stop();
@@ -301,7 +316,7 @@ public sealed partial class CaptureRunner
 
         var summary = new { schema = Program.SummarySchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.PresentationCapability, Program.LayerBlankCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = Program.RequiredCapabilities, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
@@ -355,8 +370,19 @@ public sealed partial class CaptureRunner
                 total = Enumerable.Range(0, 3).Select(gen => GC.CollectionCount(gen) - Program.CollectionsAtStart[gen]).ToArray() },
             managedBytes = GC.GetTotalMemory(false), peakWorkingSetBytes = Process.GetCurrentProcess().PeakWorkingSet64,
             outputBytes = output.Length, diagnosticOnly = true };
-        File.WriteAllBytes(Path.Combine(Program.Output, "summary.json"), JsonSerializer.SerializeToUtf8Bytes(summary, Json));
-        Console.WriteLine(JsonSerializer.Serialize(summary, Json));
+        var success = Program.CaptureLighting ? (object) new {
+            summary.schema, summary.clipProfile, summary.requestedSeconds, summary.clipLimits,
+            summary.requiredCapabilities, summary.gameBuild, summary.engineVersion, summary.frames,
+            summary.blocksRead, summary.playbackBlocksRead, summary.declaredDecodedBytes, summary.simulatedSeconds,
+            summary.initialEntities, summary.entitiesAtEnd, summary.initialSprites, summary.initialLayers,
+            summary.shaderLayers, summary.totalUpserts, summary.audio, summary.materials, summary.stagesMilliseconds,
+            summary.clipLoopSpeed, summary.interning, summary.spritePresentation, summary.presentationInspection,
+            summary.parentClosure, summary.tiles, summary.allocationsBytes, summary.gcCollections,
+            summary.managedBytes, summary.peakWorkingSetBytes, summary.outputBytes, summary.diagnosticOnly,
+            lighting = LightingSummary()
+        } : summary;
+        File.WriteAllBytes(Path.Combine(Program.Output, "summary.json"), JsonSerializer.SerializeToUtf8Bytes(success, Json));
+        Console.WriteLine(JsonSerializer.Serialize(success, Json));
     }
 
     private void Capture(EntityUid uid, TransformComponent transform, MetaDataComponent metadata,
@@ -376,12 +402,17 @@ public sealed partial class CaptureRunner
         }
         if (PresentationPolicy.RequiresBaseline(ownerPreviouslyPresent, previousSpriteId, spriteId ?? 0))
             _presentationBaselineOwners.Add(id);
+        var isMap = _entities.HasComponent<MapComponent>(uid);
+        if (Program.CaptureLighting)
+        {
+            if (isMap) _lightingGraphMaps.Add(id); else _lightingGraphMaps.Remove(id);
+        }
         var record = new { id, parentId = transform.ParentUid == EntityUid.Invalid ? (int?) null
                 : _entities.GetNetEntity(transform.ParentUid).Id,
             prototype = metadata.EntityPrototype?.ID,
             transform = new { x = transform.LocalPosition.X, y = transform.LocalPosition.Y, rotation = transform.LocalRotation.Theta },
             transform.Anchored, transform.NoLocalRotation,
-            isMap = _entities.HasComponent<MapComponent>(uid), isGrid = _entities.HasComponent<MapGridComponent>(uid), spriteId };
+            isMap, isGrid = _entities.HasComponent<MapGridComponent>(uid), spriteId };
         var fingerprint = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(record, Json)));
         if (!_fingerprints.TryGetValue(id, out var previous) || previous != fingerprint)
         {

@@ -1,0 +1,16 @@
+diff --git a/Robust.Client/GameObjects/Components/PointLightComponent.cs b/Robust.Client/GameObjects/Components/PointLightComponent.cs
+--- a/Robust.Client/GameObjects/Components/PointLightComponent.cs
++++ b/Robust.Client/GameObjects/Components/PointLightComponent.cs
+@@ -13,6 +13,12 @@ public sealed partial class PointLightComponent : SharedPointLightComponent
+     /// </summary>
+     [ViewVariables(VVAccess.ReadWrite)]
+     internal Texture? Mask;
++
++    /// <summary>
++    ///     Observe the resolved replay mask without changing renderer state.
++    ///     Resource identity and body availability are determined by the caller.
++    /// </summary>
++    public Texture? GetReplayMaskTexture() => Mask;
+     // TODO POINT LIGHT
+     // Just make this an object? on the shared comp. The server-client component split is such a pain.
+ }

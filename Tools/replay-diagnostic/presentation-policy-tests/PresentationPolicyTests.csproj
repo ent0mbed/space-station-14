@@ -13,6 +13,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../../Content.Replay.Diagnostic/PresentationPolicy.cs" Link="PresentationPolicy.cs" />
+    <Compile Include="../../../Content.Replay.Diagnostic/LightingObservationPolicy.cs" Link="LightingObservationPolicy.cs" />
+    <Compile Include="../../../Content.Replay.Diagnostic/LightingObservations.cs" Link="LightingObservations.cs" />
   </ItemGroup>
   <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
 </Project>
