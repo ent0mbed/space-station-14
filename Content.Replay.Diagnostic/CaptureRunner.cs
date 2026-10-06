@@ -71,6 +71,8 @@ public sealed partial class CaptureRunner
         }
         finally
         {
+            _viewerMetadataSystem?.ClearRenamed();
+            _viewerMetadataSystem = null;
             _resources.OnRawTextureLoaded -= OnTexture;
             _shaderBundle?.Dispose();
             if (_captureTransformSystem is { } transformSystem)
@@ -119,6 +121,10 @@ public sealed partial class CaptureRunner
         _captureTransformSystem = _entities.System<SharedTransformSystem>();
         _captureTransformSystem.OnGlobalMoveEvent += OnNativeMove;
         _entities.EntityDeleted += OnNativeDelete;
+        // Native replay startup initializes the system collection; the observer
+        // registered during that initialization can now be looked up safely.
+        _viewerMetadataSystem = _entities.System<ViewerMetadataSystem>();
+        _viewerMetadataSystem!.ClearRenamed();
         var initializedAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true);
         var checkpoint = data.Checkpoints[0];
         var sourceTickRate = (int) checkpoint.Cvars[CVars.NetTickrate.Name];
@@ -153,6 +159,11 @@ public sealed partial class CaptureRunner
             scope = new { gameBuild = Program.GameBuild, forkId = Program.ForkId,
                 bundleSha256 = Program.ResourceBundleSha256, roundId, sourceStartTick = data.TickOffset.Value },
             presentationLimits = new { owners = Program.MaxPresentationOwners, layersPerOwner = Program.MaxPresentationLayersPerOwner, retainedBytes = Program.MaxPresentationRetainedBytes },
+            viewerMetadataLimits = new { players = ViewerMetadataPolicy.MaxPlayers,
+                stations = ViewerMetadataPolicy.MaxStations, gridMemberships = ViewerMetadataPolicy.MaxGridMemberships,
+                nameCharacters = ViewerMetadataPolicy.MaxNamesCharacters, chatTextCharacters = ViewerMetadataPolicy.MaxChatTextCharacters,
+                chatEventsPerFrame = ViewerMetadataPolicy.MaxChatEventsPerFrame, chatEvents = ViewerMetadataPolicy.MaxChatEvents,
+                retainedBytes = ViewerMetadataPolicy.MaxRetainedBytes, frameBytes = ViewerMetadataPolicy.MaxFrameBytes },
             dictionaryLimits = new { spriteDefinitions = Program.MaxSpriteDefinitions,
                 spriteDefinitionBytes = Program.MaxSpriteDefinitionBytes, resourceDefinitions = Program.MaxResourceDefinitions,
                 shaderParameterNameCharacters = Program.MaxShaderParameterNameCharacters,
@@ -246,6 +257,7 @@ public sealed partial class CaptureRunner
                     ProjectNative(uid.Value, upserts, audioEvents, false);
                 }
             }
+            var viewerMetadata = CaptureViewerMetadata(state, checkpoint.FullState, messages, upserts, audioEvents, index == 0);
             var lighting = Program.CaptureLighting ? CaptureLighting(upserts, audioEvents, index == 0) : null;
             InspectSpritePresentation(index > 0);
             if (index > 0) ProjectPresentationAppearance(upserts, audioEvents);
@@ -273,15 +285,27 @@ public sealed partial class CaptureRunner
                     sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
                     upserts = index == 0 ? upserts.Skip(chunk * 1000).Take(1000) : upserts,
                     deletes, audioEvents = chunk == 0 ? audioEvents : [],
-                    spritePresentationReplacements = index == 0 ? spritePresentationReplacements.Skip(chunk * 1000).Take(1000) : spritePresentationReplacements };
+                    spritePresentationReplacements = index == 0 ? spritePresentationReplacements.Skip(chunk * 1000).Take(1000) : spritePresentationReplacements,
+                    stationUpserts = chunk == 0 ? viewerMetadata.StationUpserts : [],
+                    stationDeletes = chunk == 0 ? viewerMetadata.StationDeletes : [],
+                    playerUpserts = chunk == 0 ? viewerMetadata.PlayerUpserts : [],
+                    playerDeletes = chunk == 0 ? viewerMetadata.PlayerDeletes : [] };
                 if (lighting != null)
                     Write(new { frame.kind, frame.sequence, frame.chunkIndex, frame.chunkCount,
                         frame.sourceTick, frame.sourceTime100ns, frame.sourceServerTime100ns,
                         frame.upserts, frame.deletes, frame.audioEvents, frame.spritePresentationReplacements,
+                        frame.stationUpserts, frame.stationDeletes, frame.playerUpserts, frame.playerDeletes,
                         lighting = lighting.Chunk(chunk, index == 0) });
                 else
                     Write(frame);
             }
+            // Independent event records retain initial-frame messages and permit a seekable
+            // chat index without coalescing events into world state or replaying markup.
+            if (viewerMetadata.ChatEvents.Count != 0)
+                Write(new { kind = "chat-events", sequence = index, sourceTick = state.ToSequence.Value,
+                    sourceTime100ns = data.ReplayTime[index].Ticks,
+                    sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
+                    events = viewerMetadata.ChatEvents });
             tileCapture?.Capture(index, state.ToSequence.Value, data.ReplayTime[index].Ticks);
         }
         simulation.Stop();
@@ -360,6 +384,11 @@ public sealed partial class CaptureRunner
                 clientAncestors = _clientAncestors, movedCandidates = _movedCandidates,
                 observedNativeDeletions = _observedDeletions, maximumDepth = _maxParentDepth,
                 firstTransitionAncestors = _firstTransitionAncestors },
+            viewerMetadata = new { enabled = true, playersAtEnd = _viewerMetadata.PlayerCount,
+                stationsAtEnd = _viewerMetadata.StationCount, chatEvents = _viewerMetadata.ChatCount,
+                retainedBytes = _viewerMetadata.RetainedBytes,
+                completeness = "observed-native-clip", chatClock = "containing-native-replay-frame",
+                chatText = "native-post-accent-message" },
             tiles = tileSummary,
             allocationsBytes = new { startup = startupAllocatedBytes,
                 loadAndCheckpoint = loadedAllocatedBytes - Program.AllocatedAtStart - startupAllocatedBytes,
@@ -377,7 +406,7 @@ public sealed partial class CaptureRunner
             summary.initialEntities, summary.entitiesAtEnd, summary.initialSprites, summary.initialLayers,
             summary.shaderLayers, summary.totalUpserts, summary.audio, summary.materials, summary.stagesMilliseconds,
             summary.clipLoopSpeed, summary.interning, summary.spritePresentation, summary.presentationInspection,
-            summary.parentClosure, summary.tiles, summary.allocationsBytes, summary.gcCollections,
+            summary.parentClosure, summary.viewerMetadata, summary.tiles, summary.allocationsBytes, summary.gcCollections,
             summary.managedBytes, summary.peakWorkingSetBytes, summary.outputBytes, summary.diagnosticOnly,
             lighting = LightingSummary()
         } : summary;
@@ -409,7 +438,7 @@ public sealed partial class CaptureRunner
         }
         var record = new { id, parentId = transform.ParentUid == EntityUid.Invalid ? (int?) null
                 : _entities.GetNetEntity(transform.ParentUid).Id,
-            prototype = metadata.EntityPrototype?.ID,
+            prototype = metadata.EntityPrototype?.ID, name = NativeName(metadata.EntityName),
             transform = new { x = transform.LocalPosition.X, y = transform.LocalPosition.Y, rotation = transform.LocalRotation.Theta },
             transform.Anchored, transform.NoLocalRotation,
             isMap, isGrid = _entities.HasComponent<MapGridComponent>(uid), spriteId };

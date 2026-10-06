@@ -24,10 +24,30 @@ the engine's relative resource mount resolves correctly. Help exits without
 opening replay/resources or starting the engine. The worktree remains available
 for reuse and inspection.
 
-`--lighting-observations true` selects diagnostic **0.10** with exact sprite
-presentation. Default exact **0.8** and opt-in visual **0.9** keep their existing
-fields/capabilities; visual plus lighting is rejected before replay/resource access.
-Every 0.10 snapshot chunk/delta includes a complete point/map observation group,
+Current exports use diagnostic and summary **0.11** and always require
+`native-viewer-metadata-chat/1`. Entity/grid upserts include the exact native
+`name`, including empty names. Snapshot chunk 0 carries the full station/player
+baseline; subsequent frames carry upserts/removals. Stations use native network
+IDs, names and grid membership. Players use their recorded GUID key, account
+name, status and nullable attached network entity ID. A nonempty native player
+list replaces the roster; an empty native list means no update. Detach changes
+the attachment to null rather than removing the player. Valid references remain
+recorded even when their targets are absent from the current graph.
+
+Chat uses independent `chat-events` records, including messages in frame 0.
+Events preserve native frame order and original full message-list ordinals, with
+replay-scoped `sequence:messageIndex` IDs. They store native post-accent `Message`
+text, channel name/value, nullable sender ID, available speaker name and `hideChat`.
+No markup is evaluated, messages are not coalesced, and wrapped formatting is
+outside this narrow contract. Chat has no native emission timestamp: its clock
+is the containing native replay frame. The clip preserves recorded messages;
+native recording settings can omit messages before export. Header limits and
+the summary describe bounded metadata membership, text, events and accounting.
+
+Exact and visual presentation remain separate policies; visual holds countdown-only
+sprite changes. `--lighting-observations true` adds point/map observations with
+exact presentation; visual plus lighting is rejected before replay/resource access.
+Every lighting-enabled snapshot chunk/delta includes a complete point/map observation group,
 including explicit empty arrays. Native component removals have owner-ID deletes;
 ambient component removal replaces the map baseline with explicit absence.
 The helper also applies `robust-289.0.3-light-mask-observation.patch`, whose

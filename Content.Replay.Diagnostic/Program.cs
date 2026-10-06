@@ -13,8 +13,8 @@ internal static class Program
     public const string EngineCommit = "36905986f6809420dbc78168fc494f91723d356b";
     public static PresentationPolicy Presentation = PresentationPolicy.Exact;
     public static bool CaptureLighting;
-    public static string SceneSchema => LightingObservationPolicy.SceneSchema(Presentation, CaptureLighting);
-    public static string SummarySchema => LightingObservationPolicy.SummarySchema(Presentation, CaptureLighting);
+    public const string SceneSchema = "ss14-diagnostic/0.11";
+    public const string SummarySchema = "ss14-diagnostic-summary/0.11";
     public const string ShaderCopyCapability = "native-shader-copy-bindings/1";
     public const string AudioTimingCapability = "native-audio-timing-metadata/1";
     public const string SpriteBoundsCapability = "native-sprite-local-bounds/1";
@@ -23,11 +23,10 @@ internal static class Program
     public static string PresentationCapability => Presentation.Capability;
     // Every shared layer carries the native Blank boolean. Legacy absence means unknown.
     public const string LayerBlankCapability = "native-sprite-layer-blank/1";
-    public static string[] RequiredCapabilities => CaptureLighting
-        ? [ShaderCopyCapability, AudioTimingCapability, SpriteBoundsCapability, FrozenMaterialCapability,
-            PresentationCapability, LayerBlankCapability, LightingObservationPolicy.Capability]
-        : [ShaderCopyCapability, AudioTimingCapability, SpriteBoundsCapability, FrozenMaterialCapability,
-            PresentationCapability, LayerBlankCapability];
+    public static string[] RequiredCapabilities => [ShaderCopyCapability, AudioTimingCapability,
+        SpriteBoundsCapability, FrozenMaterialCapability, PresentationCapability, LayerBlankCapability,
+        ViewerMetadataPolicy.Capability,
+        .. CaptureLighting ? new[] { LightingObservationPolicy.Capability } : []];
     public const int MaxPresentationOwners = 250_000;
     public const int MaxPresentationLayersPerOwner = 256;
     public const long MaxPresentationRetainedBytes = 64L * 1024 * 1024;
@@ -88,10 +87,11 @@ internal static class Program
                   [--max-resource-definitions NUMBER]
 
                 Default profile: ten-second; default duration: 10 simulated seconds; tiles: false.
-                Presentation defaults to exact (schema 0.8). Visual (schema 0.9) holds countdown-only changes.
+                Current export schema: 0.11. Presentation defaults to exact; visual holds countdown-only changes.
                 Presentation policy is independent of the duration profile and requires matching consumers.
-                Lighting observations opt into schema 0.10 with exact presentation; visual plus lighting is rejected.
+                Lighting observations require exact presentation; visual plus lighting is rejected.
                 Point/map observations preserve native inputs and resolved mask availability; they do not render lighting.
+                All exports preserve native names, station grids, player attachments and ordered chat at replay frame times.
                 Ordinary animation eligibility is cached on the pinned serial engine thread.
                 Native shared-layer owners are classified on every pass.
                 Export is the default command. Without --resources, resources are downloaded to the local cache.
