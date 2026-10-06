@@ -8,6 +8,7 @@
   </PropertyGroup>
   <Import Project="../MSBuild/Content.props" />
   <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="8589934592" />
     <PackageReference Include="prometheus-net" />
     <ProjectReference Include="../Content.Client/Content.Client.csproj" />
     <ProjectReference Include="../Content.Shared/Content.Shared.csproj" />
