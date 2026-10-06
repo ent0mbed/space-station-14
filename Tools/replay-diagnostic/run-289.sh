@@ -7,6 +7,8 @@ engine_revision=36905986f6809420dbc78168fc494f91723d356b
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source_root=$(git -C "$script_dir" rev-parse --show-toplevel)
 reader_tree=$(mktemp -d "${TMPDIR:-/tmp}/ss14-replay-289.XXXXXX")
+# Keep MSBuild's project root and working directory consistent across macOS /var aliases.
+reader_tree=$(cd -- "$reader_tree" && pwd -P)
 
 if ! git -C "$source_root" cat-file -e "$game_revision^{commit}"; then
     git -C "$source_root" fetch https://github.com/space-wizards/space-station-14.git "$game_revision"
