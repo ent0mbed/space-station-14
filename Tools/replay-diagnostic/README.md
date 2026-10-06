@@ -35,8 +35,11 @@ the attachment to null rather than removing the player. Valid references remain
 recorded even when their targets are absent from the current graph.
 
 Chat uses independent `chat-events` records, including messages in frame 0.
-Events preserve native frame order and original full message-list ordinals, with
-replay-scoped `sequence:messageIndex` IDs. They store native post-accent `Message`
+Events preserve native frame order and ordinals in the playback-filtered message
+list returned by `GetMessages(index)`. Native resource/prototype uploads are already
+removed; ordinals count every remaining message type rather than chat alone.
+Replay-scoped `sequence:messageIndex` IDs are deterministic for the same native
+replay and reader. Events store native post-accent `Message`
 text, channel name/value, nullable sender ID, available speaker name and `hideChat`.
 No markup is evaluated, messages are not coalesced, and wrapped formatting is
 outside this narrow contract. Chat has no native emission timestamp: its clock

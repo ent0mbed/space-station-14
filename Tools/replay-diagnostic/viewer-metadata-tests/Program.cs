@@ -17,12 +17,13 @@ const string second = "00000000-0000-0000-0000-000000000002";
 var inventory = new ViewerMetadataInventory();
 ViewerStation[] station = [new(10, "", [20, 30])];
 ViewerPlayer[] players = [new(first, "", "InGame", 123), new(second, "recorded", "Connected", null)];
+// Gaps stand for non-chat messages retained in the playback-filtered list.
 ViewerChat[] initialChat = [new("0:2", 2, "Local", 1, "[literal]", 999, null, false),
     new("0:5", 5, "Local", 1, "[literal]", null, "", true)];
 var initial = inventory.Observe(station, players, initialChat);
 Check(initial.PlayerUpserts.Count == 2 && initial.StationUpserts.Count == 1, "Initial roster/station baseline missing.");
 Check(initial.ChatEvents.Count == 2 && initial.ChatEvents[0].EventId == "0:2"
-    && initial.ChatEvents[1].EventId == "0:5", "Initial same-text events were coalesced or ordinals changed.");
+    && initial.ChatEvents[1].EventId == "0:5", "Initial same-text events were coalesced or playback-list ordinals changed.");
 Check(initial.ChatEvents[0].Text == "[literal]" && initial.ChatEvents[0].SpeakerNetEntityId == 999
     && initial.ChatEvents[0].SpeakerName == null && initial.ChatEvents[1].SpeakerName == ""
     && initial.ChatEvents[1].HideChat, "Native text, raw references, empty/null name or hidden-chat semantics changed.");
@@ -54,4 +55,8 @@ Reject(() => ViewerMetadataPolicy.Text(new string('x', ViewerMetadataPolicy.MaxC
     ViewerMetadataPolicy.MaxChatTextCharacters, "chat"), "Oversized chat accepted.");
 Reject(() => inventory.Observe([], null, Enumerable.Repeat(initialChat[0], ViewerMetadataPolicy.MaxChatEventsPerFrame + 1).ToArray()),
     "Unbounded chat frame accepted.");
+var emptyWorld = new ViewerMetadataInventory().Observe([], [new(first, "", "Connected", null)], []);
+Check(ViewerMetadataPolicy.InitialSnapshotChunks(0, 0) == 1
+    && emptyWorld.PlayerUpserts.Count == 1 && emptyWorld.PlayerUpserts[0].AttachedNetEntityId == null,
+    "An empty world must emit one initial chunk carrying its detached-player baseline even without lighting.");
 Console.WriteLine($"Viewer metadata checks passed: {checks}. Synthetic unit data only; no native replay or engine started.");

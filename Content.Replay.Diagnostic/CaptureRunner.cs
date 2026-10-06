@@ -273,7 +273,7 @@ public sealed partial class CaptureRunner
             WriteShaderDefinitions();
             WriteSpriteDefinitions();
             // The initial native world is large. Keep JSONL records bounded without dropping entities.
-            var chunkCount = index == 0 ? Math.Max((upserts.Count + 999) / 1000, (spritePresentationReplacements.Count + 999) / 1000) : 1;
+            var chunkCount = index == 0 ? ViewerMetadataPolicy.InitialSnapshotChunks(upserts.Count, spritePresentationReplacements.Count) : 1;
             if (lighting != null && index == 0)
                 chunkCount = Math.Max(1, Math.Max(chunkCount, Math.Max((lighting.PointReplacements.Count + 999) / 1000,
                     (lighting.MapReplacements.Count + 999) / 1000)));

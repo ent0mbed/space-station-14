@@ -13,6 +13,10 @@ internal static class ViewerMetadataPolicy
     public const long MaxRetainedBytes = 32L * 1024 * 1024;
     public const long MaxFrameBytes = 16L * 1024 * 1024;
 
+    // Even an empty world needs a snapshot record for its detached-player/station baseline.
+    public static int InitialSnapshotChunks(int entities, int presentations)
+        => Math.Max(1, Math.Max((entities + 999) / 1000, (presentations + 999) / 1000));
+
     public static string Text(string value, int maximum, string role)
     {
         if (value == null || value.Length > maximum)
@@ -23,7 +27,9 @@ internal static class ViewerMetadataPolicy
 
 internal sealed record ViewerPlayer(string PlayerKey, string PlayerName, string Status, int? AttachedNetEntityId);
 internal sealed record ViewerStation(int StationNetEntityId, string Name, int[] GridNetEntityIds);
-// IDs are replay-scoped sequence:messageIndex keys. Time comes from the containing frame,
+// messageIndex is the ordinal in GetMessages(index).Messages after native upload filtering,
+// not the original recorded message list. IDs are replay-scoped sequence:messageIndex keys.
+// Time comes from the containing frame,
 // not a native chat emission timestamp. Text is immutable native post-accent plain text.
 internal sealed record ViewerChat(string EventId, int MessageIndex, string Channel, int ChannelValue,
     string Text, int? SpeakerNetEntityId, string? SpeakerName, bool HideChat);

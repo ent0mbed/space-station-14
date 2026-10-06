@@ -69,6 +69,8 @@ public sealed partial class CaptureRunner
         }
 
         var chat = new List<ViewerChat>();
+        // BufferedReplayDataProvider removed resource/prototype upload messages before
+        // returning this playback list. Count every remaining message type for the ordinal.
         for (var messageIndex = 0; messageIndex < messages.Messages.Count; messageIndex++)
         {
             if (messages.Messages[messageIndex] is not ChatMessage message) continue;
