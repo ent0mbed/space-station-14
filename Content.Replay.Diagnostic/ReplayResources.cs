@@ -137,11 +137,14 @@ internal static class ReplayResources
             {
                 var path = Path.Combine(stage, file.LocalPath);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                Download(new Uri(file.SourceURL), path, file.Sha256, Program.MaxShaderSourceFileBytes);
+                var downloadUrl = file.SourceURL.Replace("https://github.com/space-wizards/RobustToolbox/blob/",
+                    "https://raw.githubusercontent.com/space-wizards/RobustToolbox/", StringComparison.Ordinal);
+                Download(new Uri(downloadUrl), path, file.Sha256, Program.MaxShaderSourceFileBytes);
             }
             var notice = Path.Combine(stage, NoticePath);
             Directory.CreateDirectory(Path.GetDirectoryName(notice)!);
-            Download(new Uri(EngineURL("LICENSE-MIT.TXT")), notice, NoticeHash, MaxMetadataBytes);
+            Download(new Uri($"https://raw.githubusercontent.com/space-wizards/RobustToolbox/{Program.EngineCommit}/LICENSE-MIT.TXT"),
+                notice, NoticeHash, MaxMetadataBytes);
             var manifest = new ResourceManifest("ss14-replay-resources/0.1", scope,
                 new CachedClientZip("SS14.Client.zip", new FileInfo(client).Length, replay.ResourceSha256), files,
                 new CachedEngineNotice(NoticePath, 1074, NoticeHash, EngineCopyright));
@@ -170,7 +173,7 @@ internal static class ReplayResources
             EngineInputs[2].Hash, EngineURL("Robust.Client/Graphics/Clyde/Shaders/base-default.vert"))];
 
     private static string EngineURL(string path) =>
-        $"https://raw.githubusercontent.com/space-wizards/RobustToolbox/{Program.EngineCommit}/{path}";
+        $"https://github.com/space-wizards/RobustToolbox/blob/{Program.EngineCommit}/{path}";
 
     private static void ResolveEngineCommit(ReplayIdentity replay)
     {
