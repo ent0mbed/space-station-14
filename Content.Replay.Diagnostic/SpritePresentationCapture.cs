@@ -80,8 +80,7 @@ public sealed partial class CaptureRunner
         }
         var layers = GetNativePresentationLayers(component);
         bool eligible;
-        if (Program.OrdinaryAnimationEligibility == AnimationEligibilityStrategy.Cached && owner != null
-            && component.ReplayAnimationEligibilityCacheSafe)
+        if (owner != null && component.ReplayAnimationEligibilityCacheSafe)
         {
             var before = ReadEligibilityStamp(component, layers.Length);
             if (!owner.Eligibility.TryGet(before, out eligible))

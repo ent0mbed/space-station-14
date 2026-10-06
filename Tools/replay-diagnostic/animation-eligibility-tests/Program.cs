@@ -69,40 +69,26 @@ var syncQuery = (EntityQuery<SyncSpriteComponent>) Activator.CreateInstance(type
     Private, null, [null, sync], null)!;
 var queued = (HashSet<EntityUid>) typeof(SpriteSystem).GetField("_queuedFrameUpdate", Private)!.GetValue(system)!;
 var inert = (Queue<SpriteComponent>) typeof(SpriteSystem).GetField("_inertUpdateQueue", Private)!.GetValue(system)!;
-var options = typeof(CaptureRunner).Assembly.GetType("Content.Replay.Diagnostic.Program")!;
-var strategy = options.GetField("OrdinaryAnimationEligibility", BindingFlags.Static | BindingFlags.Public)!;
-void Mode(string mode) => strategy.SetValue(null, Enum.Parse(strategy.FieldType, mode));
 long Visits() => (long) typeof(CaptureRunner).GetField("_queueLayerVisits", Private)!.GetValue(runner)!;
 object EligibilityOwner(SpriteComponent sprite) => Activator.CreateInstance(ownerRecord.GetType(),
     Private | BindingFlags.Public, null, [sprite.Owner], null)!;
-bool Queue(SpriteComponent sprite, object? eligibilityOwner = null)
+bool Queue(SpriteComponent sprite, object? eligibilityOwner = null, bool tracked = true)
 {
     queued.Clear();
-    Call(runner, "QueueOrdinarySprite", sprite.Owner, sprite, system, syncQuery, eligibilityOwner ?? ownerRecord);
+    Call(runner, "QueueOrdinarySprite", sprite.Owner, sprite, system, syncQuery,
+        tracked ? eligibilityOwner ?? ownerRecord : null);
     return queued.Contains(sprite.Owner);
 }
-void Parity(SpriteComponent sprite, bool expected, string message, object? eligibilityOwner = null)
-{
-    Mode("Reference"); var reference = Queue(sprite, eligibilityOwner);
-    Mode("Cached"); var cached = Queue(sprite, eligibilityOwner);
-    Check(reference == expected && cached == reference, message);
-}
-
-Check(strategy.GetValue(null)!.ToString() == "Cached" && AnimationEligibility.Parse(null) == AnimationEligibilityStrategy.Cached
-    && AnimationEligibility.Parse("reference") == AnimationEligibilityStrategy.Reference
-    && AnimationEligibility.Parse("cached") == AnimationEligibilityStrategy.Cached,
-    "Cached must be the default, with both explicit strategies available.");
-try { AnimationEligibility.Parse("active-only"); throw new InvalidOperationException("Unknown strategy accepted."); }
-catch (ArgumentException) { checks++; }
+void CheckSelection(SpriteComponent sprite, bool expected, string message, object? eligibilityOwner = null)
+    => Check(Queue(sprite, eligibilityOwner) == expected, message);
 
 var animated = Rsi(3);
 var sprite = Sprite(uid, animated);
-Parity(sprite, true, "Resolved visible auto multiframe selection differs.");
+CheckSelection(sprite, true, "Resolved visible auto multiframe selection differs.");
 var visits = Visits();
 Check(Queue(sprite) && Visits() == visits, "Stable cached owner rescanned its layers.");
-Mode("Reference"); Queue(sprite); Queue(sprite);
-Check(Visits() == visits + 2, "Reference fallback must scan every pass.");
-Mode("Cached");
+Check(Queue(sprite, tracked: false) && Queue(sprite, tracked: false) && Visits() == visits + 2,
+    "Owners without retained eligibility must be classified on every pass.");
 
 // The native flag remains set across both notifications. Simulates another
 // mutation after pre-frame classification, before native inert queue draining.
@@ -117,11 +103,11 @@ visits = Visits(); Queue(sprite);
 Check(Visits() > visits, "Second coalesced invalidation reused an earlier selection.");
 
 system.SetBaseRsi((uid, sprite), null);
-Parity(sprite, false, "Null base RSI must invalidate despite native animated fallback.");
+CheckSelection(sprite, false, "Null base RSI must invalidate despite native animated fallback.");
 system.SetBaseRsi((uid, sprite), Rsi(1));
-Parity(sprite, false, "Static replacement base RSI stayed active.");
+CheckSelection(sprite, false, "Static replacement base RSI stayed active.");
 system.SetBaseRsi((uid, sprite), animated);
-Parity(sprite, true, "Multiframe replacement base RSI stayed inactive.");
+CheckSelection(sprite, true, "Multiframe replacement base RSI stayed inactive.");
 
 sprite.Layers[0].Visible = false;
 Check(!Queue(sprite), "Hidden layer was queued.");
@@ -129,16 +115,16 @@ sprite.Layers[0].Visible = true;
 Check(queued.Count == 0, "A FrameUpdate-time mutation retroactively changed prior selection.");
 Check(Queue(sprite), "Hidden-to-visible activation was not selected on next pass.");
 sprite.Layers[0].AutoAnimated = false;
-Parity(sprite, false, "Legacy auto-animation disable failed.");
+CheckSelection(sprite, false, "Legacy auto-animation disable failed.");
 system.LayerSetAutoAnimated(sprite.Layers[0], true);
-Parity(sprite, true, "System auto-animation reactivation failed.");
+CheckSelection(sprite, true, "System auto-animation reactivation failed.");
 system.LayerSetRsi(sprite.Layers[0], Rsi(1));
-Parity(sprite, false, "Layer RSI replacement failed.");
+CheckSelection(sprite, false, "Layer RSI replacement failed.");
 system.LayerSetRsi(sprite.Layers[0], animated);
 system.LayerSetRsiState(sprite.Layers[0], RSI.StateId.Invalid);
-Parity(sprite, false, "Invalid state used native fallback.");
+CheckSelection(sprite, false, "Invalid state used native fallback.");
 system.LayerSetRsiState(sprite.Layers[0], "animated");
-Parity(sprite, true, "State reactivation failed.");
+CheckSelection(sprite, true, "State reactivation failed.");
 
 // Native legacy properties condition their inert notification on Sys availability.
 // Eligibility invalidation must still cover these mutations before engine startup.
@@ -159,55 +145,55 @@ beforeStartup.Layers[0].State = RSI.StateId.Invalid;
 Check(beforeStartup.ReplayAnimationEligibilityRevision > revision, "Pre-start legacy state replacement was untracked.");
 
 animated.AddState(State(animated, "animated", 1));
-Parity(sprite, false, "Same-resource state replacement failed to invalidate.");
+CheckSelection(sprite, false, "Same-resource state replacement failed to invalidate.");
 animated.RemoveState("animated");
-Parity(sprite, false, "Same-resource state removal used fallback.");
+CheckSelection(sprite, false, "Same-resource state removal used fallback.");
 animated.AddState(State(animated, "animated", 3));
-Parity(sprite, true, "Same-resource state restoration failed.");
+CheckSelection(sprite, true, "Same-resource state restoration failed.");
 var epoch = RSI.ReplayAnimationStateEpoch;
 Parallel.For(0, 64, i => { var rsi = Rsi(2); rsi.RemoveState("animated"); });
 Check(RSI.ReplayAnimationStateEpoch == epoch + 128, "Parallel resource epoch increments were lost.");
 
 var blank = system.AddBlankLayer((uid, sprite), 0);
-Parity(sprite, true, "Blank insertion/remapping changed selection.");
+CheckSelection(sprite, true, "Blank insertion/remapping changed selection.");
 revision = sprite.ReplayAnimationEligibilityRevision;
 system.RemoveLayer((uid, sprite), blank.Index, out _);
 Check(sprite.ReplayAnimationEligibilityRevision > revision, "Layer removal was not tracked.");
 
 var empty = new SpriteComponent { Owner = new EntityUid(101) };
 system.CopySprite((empty.Owner, empty), (uid, sprite));
-Parity(sprite, false, "Empty CopySprite retained active membership.");
+CheckSelection(sprite, false, "Empty CopySprite retained active membership.");
 sprite = Sprite(uid, animated); Queue(sprite);
 var hiddenCopy = Sprite(empty.Owner, animated, visible: false);
 system.CopySprite((empty.Owner, hiddenCopy), (uid, sprite));
-Parity(sprite, false, "Nonempty CopySprite missed final copied visibility.");
+CheckSelection(sprite, false, "Nonempty CopySprite missed final copied visibility.");
 sprite = Sprite(uid, animated); Queue(sprite);
 sprite.Layers[0].Loop = false;
 sprite.Layers[0].AnimationTimeLeft = -1f;
 sprite.Layers[0].AdvanceFrameAnimation(animated["animated"]);
-Parity(sprite, false, "Native non-loop completion missed auto-animation invalidation.");
+CheckSelection(sprite, false, "Native non-loop completion missed auto-animation invalidation.");
 sprite = Sprite(uid, animated); Queue(sprite);
 system.LayerSetTexture(sprite.Layers[0], (Texture?) null);
-Parity(sprite, false, "Texture replacement missed state invalidation.");
+CheckSelection(sprite, false, "Texture replacement missed state invalidation.");
 sprite = Sprite(uid, animated);
 Check(Queue(sprite), "Replacement sprite fixture is not active.");
 revision = sprite.ReplayAnimationEligibilityRevision;
 sprite.layerDatums.Add(new PrototypeLayerData());
 resources.LoadBaseRsi(uid, sprite);
 Check(sprite.ReplayAnimationEligibilityRevision > revision, "Resource bulk reconstruction was not tracked.");
-Parity(sprite, false, "Resource bulk blank replacement retained active membership.");
+CheckSelection(sprite, false, "Resource bulk blank replacement retained active membership.");
 sprite = Sprite(uid, animated);
 Queue(sprite);
 sprite.layerDatums.Add(new PrototypeLayerData());
 Call(system, "LoadLayers", new Entity<SpriteComponent>(uid, sprite));
-Parity(sprite, false, "System bulk blank replacement retained active membership.");
+CheckSelection(sprite, false, "System bulk blank replacement retained active membership.");
 
 sprite = Sprite(uid, animated); Queue(sprite);
 var replacement = Sprite(uid, animated, visible: false);
 Check(replacement.ReplayAnimationIdentity != sprite.ReplayAnimationIdentity
     && replacement.ReplayAnimationEligibilityRevision == sprite.ReplayAnimationEligibilityRevision,
     "Replacement fixture must distinguish equal revisions by identity.");
-Parity(replacement, false, "Same-UID component replacement reused old membership.");
+CheckSelection(replacement, false, "Same-UID component replacement reused old membership.");
 sprite = Sprite(uid, animated); Queue(sprite);
 sync[uid] = new SyncSpriteComponent { Owner = uid };
 Check(!Queue(sprite), "Live SyncSprite addition was ignored.");
@@ -269,15 +255,15 @@ var oldOwnerRevision = aliasA.ReplayAnimationEligibilityRevision;
 system.LayerSetVisible(shared, true);
 Check(aliasA.ReplayAnimationEligibilityRevision == oldOwnerRevision,
     "The regression must exercise the native missing old-owner notification.");
-Parity(aliasA, true, "Old alias owner reused its stale hidden classification.", entryA);
-Parity(aliasB, true, "New alias owner failed reference selection.", entryB);
+CheckSelection(aliasA, true, "Old alias owner reused its stale hidden classification.", entryA);
+CheckSelection(aliasB, true, "New alias owner failed eligibility selection.", entryB);
 visits = Visits(); Queue(aliasA, entryA); Queue(aliasA, entryA);
 Check(Visits() == visits + 2, "Stable alias owner resumed caching.");
 shared.AutoAnimated = false;
-Parity(aliasA, false, "Legacy shared-layer mutation left old owner active.", entryA);
+CheckSelection(aliasA, false, "Legacy shared-layer mutation left old owner active.", entryA);
 shared.AutoAnimated = true;
 system.LayerSetRsi(shared, Rsi(1));
-Parity(aliasA, false, "Shared RSI replacement left old owner active.", entryA);
+CheckSelection(aliasA, false, "Shared RSI replacement left old owner active.", entryA);
 system.LayerSetRsi(shared, animated);
 Check(system.RemoveLayer((aliasB.Owner, aliasB), aliasIndex, out var removedShared)
     && ReferenceEquals(removedShared, shared) && shared.Owner.Comp == null
@@ -286,7 +272,7 @@ var aliasC = Sprite(new EntityUid(114), animated, visible: false);
 system.AddLayer((aliasC.Owner, aliasC), shared);
 Check(!aliasC.ReplayAnimationEligibilityCacheSafe, "Alias history was lost after removal and re-addition.");
 var entryC = EligibilityOwner(aliasC);
-Parity(aliasC, true, "Re-added shared layer differs from reference.", entryC);
+CheckSelection(aliasC, true, "Re-added shared layer eligibility differs.", entryC);
 Call(runner, "ResetAnimationEligibility");
 system.CopySprite((emptyViewSource.Owner, emptyViewSource), (aliasA.Owner, aliasA));
 Check(!aliasA.ReplayAnimationEligibilityCacheSafe && !aliasB.ReplayAnimationEligibilityCacheSafe
@@ -333,5 +319,4 @@ Check(!AnimationEligibilityEntry.AfterScan(stamp, stamp with { ResourceEpoch = 2
     "A resource mutation during scanning published a cache entry.");
 Check(!AnimationEligibilityEntry.AfterScan(stamp, stamp with { Revision = 2 }, true).TryGet(stamp, out _),
     "An owner mutation during scanning published a cache entry.");
-Mode("Reference");
 Console.WriteLine($"Animation eligibility regressions passed: {checks}. No engine or replay started.");
