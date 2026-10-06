@@ -110,7 +110,7 @@ public sealed partial class CaptureRunner
         int index, int count, MaterialBinding material)
         => new(index, layer.Visible, ColorValue.From(layer.Color), VectorValue.From(layer.Scale),
             VectorValue.From(layer.Offset), layer.Rotation.Theta, (layer.RSI ?? component.BaseRSI)?.Path.ToString(),
-            layer.State.Name, ResolveTexture(layer.Texture), layer.Loop, layer.Cycle,
+            layer.State.Name, ResolveTexture(layer.Texture), layer.Blank, layer.Loop, layer.Cycle,
             EnumName(layer.DirOffset), EnumName(layer.RenderingStrategy), layer.ShaderPrototype?.ToString(),
             layer.Shader != null, layer.Shader?.Mutable, material.ParametersUnavailable,
             layer.CopyToShaderParameters != null, CaptureShaderCopy((uid, component), layer.CopyToShaderParameters, count),
@@ -189,9 +189,11 @@ public sealed partial class CaptureRunner
         public float[] ToArray() => [Left, Bottom, Right, Top];
     }
 
+    // Blank is native draw eligibility, not inferred from unresolved exported resource paths.
+    // It participates in serialization, structural hashing and independent appearance comparison.
     private readonly record struct LayerValue(int Index, bool Visible, ColorValue Color, VectorValue Scale,
         VectorValue Offset, double Rotation, string? RsiPath, string? RsiState, string? TexturePath,
-        bool Loop, bool Cycle,
+        bool Blank, bool Loop, bool Cycle,
         string DirectionOffset, string RenderingStrategy, string? ShaderPrototype, bool HasShader,
         bool? MaterialMutable, bool ShaderParametersUnavailable, bool CopyToShader,
         ShaderCopyBinding? CopyToShaderBinding, int? MaterialId, string? MaterialUnavailableReason);

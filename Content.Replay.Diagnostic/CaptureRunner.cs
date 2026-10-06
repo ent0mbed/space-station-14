@@ -131,7 +131,7 @@ public sealed partial class CaptureRunner
         _output = output;
         Write(new { kind = "diagnostic-header", schema = Program.SceneSchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.PresentationCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.PresentationCapability, Program.LayerBlankCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frameCount = data.Count,
             sourceStartTick = data.TickOffset.Value, timeUnit = "100ns", finalizedTransport = false,
             spriteRepresentation = "interned-definitions", sourceClockOrigin100ns = _sourceClockOrigin,
@@ -289,7 +289,7 @@ public sealed partial class CaptureRunner
 
         var summary = new { schema = Program.SummarySchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
-            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.PresentationCapability }, gameBuild = Program.GameBuild,
+            requiredCapabilities = new[] { Program.ShaderCopyCapability, Program.AudioTimingCapability, Program.SpriteBoundsCapability, Program.FrozenMaterialCapability, Program.PresentationCapability, Program.LayerBlankCapability }, gameBuild = Program.GameBuild,
             engineVersion = Program.EngineVersion, frames = data.Count, blocksRead = native.BlocksRead,
             playbackBlocksRead = native.PlaybackBlocksRead,
             declaredDecodedBytes = native.DecodedBytes, simulatedSeconds = data.ReplayTime[^1].TotalSeconds,
