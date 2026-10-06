@@ -17,8 +17,8 @@ void Throws<T>(Action action, string message) where T : Exception
 
 var ids = new DefinitionIdAllocator();
 var firstStore = new DefinitionStore<Definition>(ids);
-var firstId = firstStore.Add(id => new(id, "first"));
-var secondId = firstStore.Add(id => new(id, "second"));
+var firstId = firstStore.Add("first", static (id, value) => new(id, value));
+var secondId = firstStore.Add("second", static (id, value) => new(id, value));
 Check(firstId == 1 && secondId == 2, "Fresh IDs must preserve ordinary contiguous output.");
 Check(firstStore.Count == 2, "Resident count must count values.");
 Check(firstStore.Get(firstId).Value == "first", "Later insertion changed an existing ID lookup.");
@@ -33,14 +33,14 @@ Check(emitted.Select(value => value.Id).SequenceEqual([1, 2]), "Emission changed
 firstStore.WritePending(emitted.Add);
 Check(emitted.Count == 2, "Draining a second time emitted old definitions again.");
 Check(ReferenceEquals(original, firstStore.Get(secondId)), "Emission changed resident ownership.");
-var thirdId = firstStore.Add(id => new(id, "third"));
+var thirdId = firstStore.Add("third", static (id, value) => new(id, value));
 firstStore.WritePending(emitted.Add);
 Check(thirdId == 3 && emitted.Select(value => value.Id).SequenceEqual([1, 2, 3]),
     "Emission incorrectly reset allocation or included old definitions.");
 
 // A new resident store can share the ID lifetime without inheriting old values or pending indices.
 var laterStore = new DefinitionStore<Definition>(ids);
-var fourthId = laterStore.Add(id => new(id, "fourth"));
+var fourthId = laterStore.Add("fourth", static (id, value) => new(id, value));
 Check(fourthId == 4 && laterStore.Count == 1, "ID allocation still depends on resident count.");
 Check(laterStore.Get(4).Value == "fourth", "Sparse lookup incorrectly uses ID minus one.");
 Throws<KeyNotFoundException>(() => laterStore.Get(1), "The new store unexpectedly owns another store's values.");
@@ -48,27 +48,38 @@ laterStore.WritePending(value => Check(value.Id == 4, "Sparse pending emission u
 Check(firstStore.Get(1).Value == "first", "A second store altered the original store.");
 
 var separateKind = new DefinitionStore<Definition>(new());
-Check(separateKind.Add(id => new(id, "resource")) == 1, "Definition kinds must have independent ID spaces.");
+Check(separateKind.Add("resource", static (id, value) => new(id, value)) == 1, "Definition kinds must have independent ID spaces.");
 Throws<ArgumentOutOfRangeException>(() => new DefinitionIdAllocator(-1), "Negative allocator state was accepted.");
 
 var nearLimit = new DefinitionIdAllocator(int.MaxValue - 1);
 var limited = new DefinitionStore<Definition>(nearLimit);
-Check(limited.Add(id => new(id, "last")) == int.MaxValue, "The last positive ID must remain usable.");
-var factoryCalled = false;
-Throws<OverflowException>(() => limited.Add(id => { factoryCalled = true; return new(id, "overflow"); }),
+Check(limited.Add("last", static (id, value) => new(id, value)) == int.MaxValue, "The last positive ID must remain usable.");
+bool[] factoryCalled = [false];
+Throws<OverflowException>(() => limited.Add(factoryCalled, static (id, called) => { called[0] = true; return new(id, "overflow"); }),
     "Definition allocation wrapped or reused an ID.");
-Check(!factoryCalled && limited.Count == 1, "Overflow changed residence or invoked the factory.");
+Check(!factoryCalled[0] && limited.Count == 1, "Overflow changed residence or invoked the factory.");
 Throws<OverflowException>(() => nearLimit.Allocate(), "Overflow changed allocator state and permitted reuse.");
 Check(limited.Get(int.MaxValue).Value == "last", "Overflow corrupted the existing sparse value.");
 
 var pendingFailure = new DefinitionStore<Definition>(new());
-pendingFailure.Add(id => new(id, "retry"));
+pendingFailure.Add("retry", static (id, value) => new(id, value));
 Throws<IOException>(() => pendingFailure.WritePending(_ => throw new IOException()),
     "Writer failure must propagate.");
 var resumed = new List<Definition>();
 pendingFailure.WritePending(resumed.Add);
 pendingFailure.WritePending(resumed.Add);
 Check(resumed.Count == 1 && resumed[0].Id == 1, "An unacknowledged pending value was lost or duplicated.");
+
+var factoryFailure = new DefinitionStore<Definition>(new());
+Throws<IOException>(() => factoryFailure.Add("unused", static (_, _) => throw new IOException()),
+    "Factory failure must propagate before committing residence or pending emission.");
+Check(factoryFailure.Count == 0, "Factory failure committed a resident value.");
+Check(factoryFailure.Add("after-failure", static (id, value) => new(id, value)) == 2,
+    "Factory failure reused the allocated ID.");
+var afterFailure = new List<Definition>();
+factoryFailure.WritePending(afterFailure.Add);
+Check(afterFailure.Count == 1 && afterFailure[0].Id == 2 && afterFailure[0].Value == "after-failure",
+    "Explicit factory state or failure changed pending emission.");
 
 if (args.Length > 0)
 {
@@ -99,7 +110,7 @@ void CheckFixture(string path)
         if (stores.TryGetValue(kind, out var store))
         {
             var recordedId = record.GetProperty(idProperties[kind]).GetInt32();
-            var allocatedId = store.Add(id => new(id, line));
+            var allocatedId = store.Add(line, static (id, value) => new(id, value));
             Check(allocatedId == recordedId, $"Fixture {kind} ID changed.");
             Check(store.Get(recordedId).Value == line, $"Fixture {kind} lookup changed its value.");
             expected.Add(line);

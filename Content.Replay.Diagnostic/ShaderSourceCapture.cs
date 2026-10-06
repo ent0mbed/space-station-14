@@ -42,9 +42,9 @@ public sealed partial class CaptureRunner
             if (_shaderSourceDefinitions.Count >= Program.MaxShaderSourceDefinitions
                 || _shaderSourceDefinitionBytes + bytes.Length > Program.MaxShaderSourceDefinitionBytes)
                 throw new InvalidDataException("Shader source-definition budget exceeded.");
-            id = _shaderSourceDefinitions.Add(definitionId => new {
+            id = _shaderSourceDefinitions.Add((identity, sourceProgram), static (definitionId, state) => new {
                 kind = "shader-source-definition", shaderSourceId = definitionId,
-                value = new { identitySha256 = identity, program = sourceProgram } });
+                value = new { identitySha256 = state.identity, program = state.sourceProgram } });
             _shaderSourceIdentities.Add(identity, id);
             _shaderSourceDefinitionBytes += bytes.Length;
         }

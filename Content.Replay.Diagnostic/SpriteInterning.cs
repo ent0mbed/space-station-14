@@ -95,8 +95,8 @@ public sealed partial class CaptureRunner
             layers = ownedLayers, postShaders = ownedPosts }, Json);
         if (_spriteDefinitionBytes + bytes.Length > Program.MaxSpriteDefinitionBytes)
             throw new InvalidDataException("Diagnostic sprite-definition byte budget exceeded.");
-        var id = _spriteDefinitions.Add(definitionId =>
-            new SpriteDefinition(definitionId, head, ownedLayers, ownedPosts, bytes));
+        var id = _spriteDefinitions.Add((head, ownedLayers, ownedPosts, bytes), static (definitionId, state) =>
+            new SpriteDefinition(definitionId, state.head, state.ownedLayers, state.ownedPosts, state.bytes));
         var definition = _spriteDefinitions.Get(id);
         (_spriteBuckets.TryGetValue(key, out bucket) ? bucket : _spriteBuckets[key] = new()).Add(definition);
         _spriteDefinitionBytes += bytes.Length;

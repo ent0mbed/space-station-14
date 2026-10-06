@@ -16,8 +16,10 @@ public sealed partial class CaptureRunner
             return id;
         if (_resourceDefinitions.Count >= Program.MaxResourceDefinitions)
             throw new InvalidDataException("Diagnostic resource-definition count budget exceeded.");
-        id = _resourceDefinitions.Add(definitionId => new { kind = "resource-definition", resourceId = definitionId,
-            resourceKind, path, gameBuild = Program.GameBuild, bundleSha256 = Program.ResourceBundleSha256, metadata });
+        id = _resourceDefinitions.Add((resourceKind, path, metadata), static (definitionId, state) => new {
+            kind = "resource-definition", resourceId = definitionId,
+            resourceKind = state.resourceKind, path = state.path,
+            gameBuild = Program.GameBuild, bundleSha256 = Program.ResourceBundleSha256, metadata = state.metadata });
         _resourceIds.Add((resourceKind, path), id);
         return id;
     }

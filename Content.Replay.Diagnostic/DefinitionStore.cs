@@ -10,10 +10,11 @@ internal sealed class DefinitionStore<T>(DefinitionIdAllocator ids) where T : cl
 
     public T Get(int id) => _definitions[id];
 
-    public int Add(Func<int, T> create)
+    // Static factories receive explicit state so cache-hit callers need no captured-variable frame.
+    public int Add<TState>(TState state, Func<int, TState, T> create)
     {
         var id = ids.Allocate();
-        var value = create(id);
+        var value = create(id, state);
         _definitions.Add(id, value);
         _pending.Enqueue(id);
         return id;

@@ -68,9 +68,9 @@ public sealed partial class CaptureRunner
                 || _materialDefinitionBytes + bytes.Length > Program.MaxMaterialDefinitionBytes)
                 throw new InvalidDataException("Interned material-definition budget exceeded.");
             // Definitions own serialized copies; no entity or mutable shader instances are retained.
-            var id = _materialDefinitions.Add(definitionId => new {
+            var id = _materialDefinitions.Add(bytes, static (definitionId, ownedBytes) => new {
                 kind = "material-definition", materialId = (int?) definitionId,
-                value = JsonSerializer.Deserialize<JsonElement>(bytes) });
+                value = JsonSerializer.Deserialize<JsonElement>(ownedBytes) });
             binding = new(id, null, unavailable.Count != 0 || stencil.Enabled);
             _materialDefinitionBytes += bytes.Length;
             _materialIdentities.Add(identity, binding);
