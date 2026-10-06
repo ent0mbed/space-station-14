@@ -29,5 +29,5 @@ if ! git -C "$reader_tree/RobustToolbox" apply --reverse --check "$script_dir/ro
 fi
 mkdir -p "$reader_tree/Content.Replay.Diagnostic"
 cp "$source_root/Content.Replay.Diagnostic/"*.cs \
-    "$source_root/Content.Replay.Diagnostic/"*.csproj "$reader_tree/Content.Replay.Diagnostic/"
-
+    "$source_root/Content.Replay.Diagnostic/"*.csproj \
+    "$source_root/Content.Replay.Diagnostic/runtimeconfig.template.json" "$reader_tree/Content.Replay.Diagnostic/"
