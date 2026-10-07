@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup><ImportDirectoryPackagesProps>false</ImportDirectoryPackagesProps></PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../Content.Replay.Diagnostic/RoofObservations.cs" Link="RoofObservations.cs" />
+    <Compile Include="../../../Content.Replay.Diagnostic/LightingObservations.cs" Link="LightingObservations.cs" />
+    <Compile Include="../../../Content.Replay.Diagnostic/LightingObservationPolicy.cs" Link="LightingObservationPolicy.cs" />
+    <Compile Include="../../../Content.Replay.Diagnostic/PresentationPolicy.cs" Link="PresentationPolicy.cs" />
+  </ItemGroup>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+</Project>

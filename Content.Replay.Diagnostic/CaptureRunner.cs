@@ -146,6 +146,7 @@ public sealed partial class CaptureRunner
         using var tileCapture = Program.CaptureTiles
             ? new NativeTileCapture(_entities, _resources, _tileDefinitions, _configuration, _fingerprints.ContainsKey, _sourceClockOrigin)
             : null;
+        using var roofCapture = Program.CaptureLighting ? new NativeRoofCapture(_entities) : null;
         _output = output;
         var header = new { kind = "diagnostic-header", schema = Program.SceneSchema,
             clipProfile = Program.Profile.Name, requestedSeconds = Program.Seconds, clipLimits = Program.ClipLimits,
@@ -164,6 +165,9 @@ public sealed partial class CaptureRunner
                 nameCharacters = ViewerMetadataPolicy.MaxNamesCharacters, chatTextCharacters = ViewerMetadataPolicy.MaxChatTextCharacters,
                 chatEventsPerFrame = ViewerMetadataPolicy.MaxChatEventsPerFrame, chatEvents = ViewerMetadataPolicy.MaxChatEvents,
                 retainedBytes = ViewerMetadataPolicy.MaxRetainedBytes, frameBytes = ViewerMetadataPolicy.MaxFrameBytes },
+            roofLimits = Program.CaptureLighting ? new { grids = RoofObservationPolicy.MaxGrids,
+                chunks = RoofObservationPolicy.MaxChunks, tiles = RoofObservationPolicy.MaxTiles,
+                retainedBytes = RoofObservationPolicy.MaxBytes, chunkSize = RoofObservationPolicy.ChunkSize } : null,
             dictionaryLimits = new { spriteDefinitions = Program.MaxSpriteDefinitions,
                 spriteDefinitionBytes = Program.MaxSpriteDefinitionBytes, resourceDefinitions = Program.MaxResourceDefinitions,
                 shaderParameterNameCharacters = Program.MaxShaderParameterNameCharacters,
@@ -259,10 +263,12 @@ public sealed partial class CaptureRunner
             }
             var viewerMetadata = CaptureViewerMetadata(state, checkpoint.FullState, messages, upserts, audioEvents, index == 0);
             var lighting = Program.CaptureLighting ? CaptureLighting(upserts, audioEvents, index == 0) : null;
+            var roofs = roofCapture?.Capture(state, uid => ProjectNative(uid, upserts, audioEvents, index == 0));
             InspectSpritePresentation(index > 0);
             if (index > 0) ProjectPresentationAppearance(upserts, audioEvents);
             ProjectMoved(upserts, audioEvents, index == 0);
             if (Program.CaptureLighting) ValidateLightingClosure();
+            if (roofCapture != null) ValidateRoofClosure(roofCapture);
             var spritePresentationReplacements = FinishSpritePresentation(data.ReplayTime[index].Ticks, index);
             if (index == 0)
                 _initialEntities = upserts.Count;
@@ -278,6 +284,9 @@ public sealed partial class CaptureRunner
                 chunkCount = Math.Max(1, Math.Max(chunkCount, Math.Max((lighting.PointReplacements.Count + 999) / 1000,
                     Math.Max((lighting.MapReplacements.Count + 999) / 1000,
                         (lighting.OccluderReplacements.Count + 999) / 1000))));
+            if (roofs != null && index == 0)
+                chunkCount = Math.Max(chunkCount, Math.Max((roofs.GridReplacements.Count + 999) / 1000,
+                    (roofs.ChunkReplacements.Count + 999) / 1000));
             for (var chunk = 0; chunk < chunkCount; chunk++)
             {
                 var frame = new { kind = index == 0 ? "snapshot" : "delta", sequence = index,
@@ -296,7 +305,7 @@ public sealed partial class CaptureRunner
                         frame.sourceTick, frame.sourceTime100ns, frame.sourceServerTime100ns,
                         frame.upserts, frame.deletes, frame.audioEvents, frame.spritePresentationReplacements,
                         frame.stationUpserts, frame.stationDeletes, frame.playerUpserts, frame.playerDeletes,
-                        lighting = lighting.Chunk(chunk, index == 0) });
+                        lighting = lighting.Chunk(chunk, index == 0), roofs = roofs!.Chunk(chunk, index == 0) });
                 else
                     Write(frame);
             }
@@ -409,7 +418,7 @@ public sealed partial class CaptureRunner
             summary.clipLoopSpeed, summary.interning, summary.spritePresentation, summary.presentationInspection,
             summary.parentClosure, summary.viewerMetadata, summary.tiles, summary.allocationsBytes, summary.gcCollections,
             summary.managedBytes, summary.peakWorkingSetBytes, summary.outputBytes, summary.diagnosticOnly,
-            lighting = LightingSummary()
+            lighting = LightingSummary(), roofs = roofCapture!.Summary()
         } : summary;
         File.WriteAllBytes(Path.Combine(Program.Output, "summary.json"), JsonSerializer.SerializeToUtf8Bytes(success, Json));
         Console.WriteLine(JsonSerializer.Serialize(success, Json));
