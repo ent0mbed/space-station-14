@@ -1,6 +1,7 @@
 using Robust.Client.GameObjects;
 using Robust.Client.Graphics;
 using Robust.Shared.Map.Components;
+using System.Diagnostics;
 
 namespace Content.Replay.Diagnostic;
 
@@ -20,9 +21,12 @@ public sealed partial class CaptureRunner
     private int _initialPointLights;
     private int _initialMapLights;
     private int _initialOccluders;
+    private double _lightingObservationMs;
+    private double _occluderObservationMs;
 
     private LightingChanges CaptureLighting(List<object> upserts, List<object> audioEvents, bool initial)
     {
+        var lightingStart = Stopwatch.GetTimestamp();
         _lighting.Begin();
         // AllEntityQueryEnumerator includes paused entities. Pausing does not remove
         // a component from the observation inventory or grant an implicit delete.
@@ -82,6 +86,7 @@ public sealed partial class CaptureRunner
         }
         // FrameUpdate has refreshed the native shared-edge cache. Inventory membership
         // is independent of native rendering trees, viewport visibility and Enabled.
+        var occluderStart = Stopwatch.GetTimestamp();
         var occluders = _entities.AllEntityQueryEnumerator<OccluderComponent>();
         while (occluders.MoveNext(out var uid, out var occluder))
         {
@@ -94,6 +99,7 @@ public sealed partial class CaptureRunner
             _lighting.ObserveOccluder(metadata.NetEntity.Id, occluder.Enabled, occluder.Polygon, occluder.OccludingEdges);
             _occluderInspections++;
         }
+        _occluderObservationMs += Stopwatch.GetElapsedTime(occluderStart).TotalMilliseconds;
         var changes = _lighting.Finish();
         foreach (var id in changes.MapDeletes)
             if (!_frameDeleted.Contains(id) && _entities.TryGetEntity(new NetEntity(id), out var uid) && uid is { } live)
@@ -110,6 +116,7 @@ public sealed partial class CaptureRunner
             _initialMapLights = _lighting.MapCount;
             _initialOccluders = _lighting.OccluderCount;
         }
+        _lightingObservationMs += Stopwatch.GetElapsedTime(lightingStart).TotalMilliseconds;
         return changes;
     }
 

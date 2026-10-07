@@ -6,6 +6,7 @@ using Robust.Shared.Map.Components;
 using Robust.Shared.GameStates;
 using Robust.Shared.Physics;
 using Robust.Shared.Physics.Components;
+using System.Diagnostics;
 
 namespace Content.Replay.Diagnostic;
 
@@ -44,6 +45,9 @@ internal sealed class NativeRoofCapture : IDisposable
     private int _initialGrids;
     private int _initialChunks;
     private int _initialTiles;
+    public RoofInvalidationCounts Invalidations { get; private set; }
+    public double RefreshMilliseconds { get; private set; }
+    public double ResolveMilliseconds { get; private set; }
 
     private readonly record struct GridStamp(bool Implicit, LightingColor ImplicitColor, bool Explicit,
         LightingColor ExplicitColor, uint RoofTick, uint TileTick, int TileSize);
@@ -66,7 +70,7 @@ internal sealed class NativeRoofCapture : IDisposable
         _transforms.OnGlobalMoveEvent += OnMove;
     }
 
-    private void OnTileChanged(ref TileChangedEvent args) => Dirty(args.Entity.Owner);
+    private void OnTileChanged(ref TileChangedEvent args) => Dirty(args.Entity.Owner, RoofDirtyReason.Tiles);
     private void OnMove(ref MoveEvent args)
     {
         // Moving the grid moves both roof tiles and its contributors together.
@@ -88,13 +92,22 @@ internal sealed class NativeRoofCapture : IDisposable
         ChargeInvalidation(64);
         _changedContributors.Add(uid);
     }
-    private void Dirty(EntityUid grid)
+    private void Dirty(EntityUid grid, RoofDirtyReason reason)
     {
+        Invalidations = Invalidations.Request(reason);
+        var liveImplicitRoof = reason == RoofDirtyReason.Contributor && Live(grid)
+            && _entities.HasComponent<ImplicitRoofComponent>(grid);
+        if (!RoofObservationPolicy.ShouldDirtyGrid(liveImplicitRoof, reason))
+        {
+            Invalidations = Invalidations with { ImplicitContributorSkips = Invalidations.ImplicitContributorSkips + 1 };
+            return;
+        }
         if (_dirtyGrids.Contains(grid)) return;
         if (_dirtyGrids.Count >= RoofObservationPolicy.MaxGrids)
             throw new InvalidDataException("Native affected roof-grid budget exceeded.");
         ChargeInvalidation(64);
         _dirtyGrids.Add(grid);
+        Invalidations = Invalidations with { AffectedGridAdmissions = Invalidations.AffectedGridAdmissions + 1 };
     }
     private bool Live(EntityUid uid) => _entities.TryGetComponent<MetaDataComponent>(uid, out var metadata)
         && metadata.EntityLifeStage >= EntityLifeStage.Initialized && metadata.EntityLifeStage < EntityLifeStage.Terminating;
@@ -102,6 +115,7 @@ internal sealed class NativeRoofCapture : IDisposable
     public RoofChanges Capture(GameState state, Action<EntityUid> ensureOwner)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(NativeRoofCapture));
+        var refreshStart = Stopwatch.GetTimestamp();
         _inventory.Begin();
         if (_initial)
         {
@@ -114,11 +128,12 @@ internal sealed class NativeRoofCapture : IDisposable
         foreach (var uid in _observer.Changed)
         {
             if (Live(uid) && _entities.HasComponent<MapGridComponent>(uid)) AddGrid(uid);
-            if (_observer.GridChanged.Contains(uid) || _grids.Contains(uid) && !Live(uid)) Dirty(uid);
+            if (_observer.GridChanged.Contains(uid)) Dirty(uid, RoofDirtyReason.GridComponent);
+            if (_grids.Contains(uid) && !Live(uid)) Dirty(uid, RoofDirtyReason.Unavailable);
             QueueDependents(uid);
             if (Live(uid) && _entities.HasComponent<IsRoofComponent>(uid)) QueueContributor(uid);
         }
-        if (_observer.TileDefinitionsChanged) foreach (var uid in _grids) Dirty(uid);
+        if (_observer.TileDefinitionsChanged) foreach (var uid in _grids) Dirty(uid, RoofDirtyReason.Prototype);
 
         // These bounded inventories contain roof/grid members, never all entities
         // or all tiles. Sample final scalar values after native FrameUpdate,
@@ -129,16 +144,20 @@ internal sealed class NativeRoofCapture : IDisposable
         _changedContributors.Clear();
         foreach (var uid in _grids)
         {
-            if (!Live(uid) || !_entities.TryGetComponent<MapGridComponent>(uid, out var grid)) { Dirty(uid); continue; }
+            if (!Live(uid) || !_entities.TryGetComponent<MapGridComponent>(uid, out var grid))
+            { Dirty(uid, RoofDirtyReason.Unavailable); continue; }
             var implicitPresent = _entities.TryGetComponent<ImplicitRoofComponent>(uid, out var implicitRoof);
             var explicitPresent = _entities.TryGetComponent<RoofComponent>(uid, out var explicitRoof);
             var stamp = new GridStamp(implicitPresent, implicitPresent ? Color(implicitRoof!.Color) : default,
                 explicitPresent, explicitPresent ? Color(explicitRoof!.Color) : default,
                 explicitPresent ? explicitRoof!.LastModifiedTick.Value : 0, grid.LastTileModifiedTick.Value, grid.TileSize);
-            if (!_gridStamps.TryGetValue(uid, out var old) || old != stamp) { Dirty(uid); _gridStamps[uid] = stamp; }
+            if (!_gridStamps.TryGetValue(uid, out var old) || old != stamp)
+            { Dirty(uid, RoofDirtyReason.GridScalar); _gridStamps[uid] = stamp; }
         }
         ChargeInvalidation();
+        RefreshMilliseconds += Stopwatch.GetElapsedTime(refreshStart).TotalMilliseconds;
 
+        var resolveStart = Stopwatch.GetTimestamp();
         foreach (var uid in _dirtyGrids.OrderBy(uid => uid.Id))
         {
             if (!Live(uid) || !_entities.TryGetComponent<MapGridComponent>(uid, out var grid))
@@ -164,6 +183,7 @@ internal sealed class NativeRoofCapture : IDisposable
             _inventory.ReplaceGrid(id, grid.TileSize, ResolveTiles(uid, grid, implicitRoof, explicitRoof), implicitPresent);
             _resolvedGrids++;
         }
+        ResolveMilliseconds += Stopwatch.GetElapsedTime(resolveStart).TotalMilliseconds;
         _dirtyGrids.Clear();
         _observer.Clear();
         var changes = _inventory.Finish();
@@ -187,7 +207,7 @@ internal sealed class NativeRoofCapture : IDisposable
         if (_grids.Contains(uid)) return;
         if (_grids.Count >= RoofObservationPolicy.MaxGrids) throw new InvalidDataException("Native roof-grid membership budget exceeded.");
         ChargeInvalidation(384);
-        _grids.Add(uid); Dirty(uid);
+        _grids.Add(uid); Dirty(uid, RoofDirtyReason.Membership);
     }
     private void RemoveGrid(EntityUid uid)
     {
@@ -219,7 +239,7 @@ internal sealed class NativeRoofCapture : IDisposable
                 // ancestry is assembled. Keep that storage charged as scratch.
                 _invalidationScratchBytes += 256 + previous.Ancestors.Length * 64L;
                 ChargeInvalidation();
-                if (previous.Stamp.Grid is { } oldGrid) Dirty(oldGrid);
+                if (previous.Stamp.Grid is { } oldGrid) Dirty(oldGrid, RoofDirtyReason.Contributor);
                 foreach (var ancestor in previous.Ancestors)
                 {
                     var members = _dependencies[ancestor]; members.Remove(uid); _links--;
@@ -251,7 +271,7 @@ internal sealed class NativeRoofCapture : IDisposable
             }
             ChargeInvalidation(256);
             _contributors[uid] = new(stamp, ancestors.ToArray());
-            if (stamp.Grid is { } grid) Dirty(grid);
+            if (stamp.Grid is { } grid) Dirty(grid, RoofDirtyReason.Contributor);
         }
         finally { _invalidationScratchBytes = scratchBefore; ChargeInvalidation(); }
     }
@@ -284,6 +304,8 @@ internal sealed class NativeRoofCapture : IDisposable
         chunkReplacements = _chunkChanges, chunkDeletes = _chunkDeletes, baselineMembershipScans = 1,
         resolvedGridPasses = _resolvedGrids, nativeTilesInspected = _nativeTilesInspected,
         contributorCount = _contributors.Count, ancestryLinks = _links, retainedBytes = _inventory.RetainedBytes,
+        invalidationRequests = Invalidations, refreshMilliseconds = RefreshMilliseconds,
+        resolveMilliseconds = ResolveMilliseconds,
         peakLiveStagedBytes = _inventory.PeakLiveStagedBytes,
         limits = new { grids = RoofObservationPolicy.MaxGrids, chunks = RoofObservationPolicy.MaxChunks,
             tiles = RoofObservationPolicy.MaxTiles, retainedBytes = RoofObservationPolicy.MaxBytes, chunkSize = RoofObservationPolicy.ChunkSize },
