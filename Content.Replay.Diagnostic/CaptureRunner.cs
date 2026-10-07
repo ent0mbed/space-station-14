@@ -57,6 +57,7 @@ public sealed partial class CaptureRunner
     private long _sourceClockOrigin;
     private long _projectionAllocatedBytes;
     private SharedTransformSystem? _captureTransformSystem;
+    private readonly FrameDiagnostics _frameDiagnostics = new();
 
     public async Task RunAsync()
     {
@@ -193,6 +194,18 @@ public sealed partial class CaptureRunner
         for (var index = 0; index < data.Count; index++)
         {
             var stepStart = Stopwatch.GetTimestamp();
+            var frameAllocatedStart = GC.GetTotalAllocatedBytes(precise: false);
+            var gen0Start = GC.CollectionCount(0);
+            var gen1Start = GC.CollectionCount(1);
+            var gen2Start = GC.CollectionCount(2);
+            var lightingMsStart = _lightingObservationMs;
+            var occluderMsStart = _occluderObservationMs;
+            var fusedMsStart = _fusedInspectionMs;
+            var outputMsStart = _outputMs;
+            var roofRefreshStart = roofCapture?.RefreshMilliseconds ?? 0;
+            var roofResolveStart = roofCapture?.ResolveMilliseconds ?? 0;
+            var roofInvalidationsStart = roofCapture?.Invalidations ?? default;
+            double roofMs = 0;
             var state = data.GetState(index);
             var messages = data.GetMessages(index);
             foreach (var message in messages.Messages)
@@ -223,7 +236,8 @@ public sealed partial class CaptureRunner
                 QueueOrdinaryPhases(state, true);
                 _entities.FrameUpdate(0);
             }
-            applyMs += Stopwatch.GetElapsedTime(stepStart).TotalMilliseconds;
+            var frameApplyMs = Stopwatch.GetElapsedTime(stepStart).TotalMilliseconds;
+            applyMs += frameApplyMs;
 
             var projectionStart = Stopwatch.GetTimestamp();
             var projectionAllocatedStart = GC.GetTotalAllocatedBytes(precise: false);
@@ -263,7 +277,13 @@ public sealed partial class CaptureRunner
             }
             var viewerMetadata = CaptureViewerMetadata(state, checkpoint.FullState, messages, upserts, audioEvents, index == 0);
             var lighting = Program.CaptureLighting ? CaptureLighting(upserts, audioEvents, index == 0) : null;
-            var roofs = roofCapture?.Capture(state, uid => ProjectNative(uid, upserts, audioEvents, index == 0));
+            RoofChanges? roofs = null;
+            if (roofCapture != null)
+            {
+                var roofStart = Stopwatch.GetTimestamp();
+                roofs = roofCapture.Capture(state, uid => ProjectNative(uid, upserts, audioEvents, index == 0));
+                roofMs = Stopwatch.GetElapsedTime(roofStart).TotalMilliseconds;
+            }
             InspectSpritePresentation(index > 0);
             if (index > 0) ProjectPresentationAppearance(upserts, audioEvents);
             ProjectMoved(upserts, audioEvents, index == 0);
@@ -272,7 +292,8 @@ public sealed partial class CaptureRunner
             var spritePresentationReplacements = FinishSpritePresentation(data.ReplayTime[index].Ticks, index);
             if (index == 0)
                 _initialEntities = upserts.Count;
-            _projectionMs += Stopwatch.GetElapsedTime(projectionStart).TotalMilliseconds;
+            var frameProjectionMs = Stopwatch.GetElapsedTime(projectionStart).TotalMilliseconds;
+            _projectionMs += frameProjectionMs;
             _projectionAllocatedBytes += GC.GetTotalAllocatedBytes(precise: false) - projectionAllocatedStart;
             _upserts += upserts.Count;
             WriteResourceDefinitions();
@@ -317,6 +338,15 @@ public sealed partial class CaptureRunner
                     sourceServerTime100ns = checked(_sourceClockOrigin + data.ReplayTime[index].Ticks),
                     events = viewerMetadata.ChatEvents });
             tileCapture?.Capture(index, state.ToSequence.Value, data.ReplayTime[index].Ticks);
+            _frameDiagnostics.Add(index, new FrameSample(
+                Stopwatch.GetElapsedTime(stepStart).TotalMilliseconds, frameApplyMs, frameProjectionMs,
+                _lightingObservationMs - lightingMsStart, _occluderObservationMs - occluderMsStart, roofMs,
+                (roofCapture?.RefreshMilliseconds ?? 0) - roofRefreshStart,
+                (roofCapture?.ResolveMilliseconds ?? 0) - roofResolveStart,
+                _fusedInspectionMs - fusedMsStart, _outputMs - outputMsStart,
+                GC.GetTotalAllocatedBytes(precise: false) - frameAllocatedStart,
+                GC.CollectionCount(0) - gen0Start, GC.CollectionCount(1) - gen1Start, GC.CollectionCount(2) - gen2Start,
+                (roofCapture?.Invalidations ?? default) - roofInvalidationsStart));
         }
         simulation.Stop();
         var loopAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - loopAllocatedStart;
@@ -370,6 +400,7 @@ public sealed partial class CaptureRunner
                 resourceInventory = inventoryMs, output = _outputMs, clipLoop = simulation.Elapsed.TotalMilliseconds,
                 total = Program.Total.Elapsed.TotalMilliseconds },
             clipLoopSpeed = data.ReplayTime[^1].TotalSeconds / simulation.Elapsed.TotalSeconds,
+            frameDiagnostics = _frameDiagnostics,
             interning = new { spriteCandidates = _spriteCandidates, spriteDefinitions = _spriteDefinitions.Count,
                 spriteDefinitionBytes = _spriteDefinitionBytes, previousSpriteReuses = _previousSpriteReuses,
                 sharedSpriteReuses = _sharedSpriteReuses, resourceDefinitions = _resourceDefinitions.Count,
@@ -415,7 +446,7 @@ public sealed partial class CaptureRunner
             summary.blocksRead, summary.playbackBlocksRead, summary.declaredDecodedBytes, summary.simulatedSeconds,
             summary.initialEntities, summary.entitiesAtEnd, summary.initialSprites, summary.initialLayers,
             summary.shaderLayers, summary.totalUpserts, summary.audio, summary.materials, summary.stagesMilliseconds,
-            summary.clipLoopSpeed, summary.interning, summary.spritePresentation, summary.presentationInspection,
+            summary.clipLoopSpeed, summary.frameDiagnostics, summary.interning, summary.spritePresentation, summary.presentationInspection,
             summary.parentClosure, summary.viewerMetadata, summary.tiles, summary.allocationsBytes, summary.gcCollections,
             summary.managedBytes, summary.peakWorkingSetBytes, summary.outputBytes, summary.diagnosticOnly,
             lighting = LightingSummary(), roofs = roofCapture!.Summary()

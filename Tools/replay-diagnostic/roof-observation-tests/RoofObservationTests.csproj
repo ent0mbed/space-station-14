@@ -8,6 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../../Content.Replay.Diagnostic/RoofObservations.cs" Link="RoofObservations.cs" />
+    <Compile Include="../../../Content.Replay.Diagnostic/RoofDiagnostics.cs" Link="RoofDiagnostics.cs" />
+    <Compile Include="../../../Content.Replay.Diagnostic/FrameDiagnostics.cs" Link="FrameDiagnostics.cs" />
     <Compile Include="../../../Content.Replay.Diagnostic/LightingObservations.cs" Link="LightingObservations.cs" />
     <Compile Include="../../../Content.Replay.Diagnostic/LightingObservationPolicy.cs" Link="LightingObservationPolicy.cs" />
     <Compile Include="../../../Content.Replay.Diagnostic/PresentationPolicy.cs" Link="PresentationPolicy.cs" />

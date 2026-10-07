@@ -93,4 +93,49 @@ Reject(() => refreshBoundary.SetOutsideBytes(RoofObservationPolicy.InvalidationB
     "Old ancestry and new builder residency bypassed admission.");
 inventory.Begin(); inventory.ReplaceGrid(9, 1, [new(new(1, 1), second)]); inventory.Reset();
 Check(inventory.GridCount == 0 && inventory.ChunkCount == 0 && inventory.TileCount == 0 && inventory.RetainedBytes == 0, "Close clears owned inventory.");
-Console.WriteLine($"{checks} focused roof ownership/order/wire/bound checks passed.");
+foreach (var reason in Enum.GetValues<RoofDirtyReason>())
+{
+    Check(RoofObservationPolicy.ShouldDirtyGrid(false, reason), "Explicit/absent implicit coverage retains every invalidation.");
+    Check(RoofObservationPolicy.ShouldDirtyGrid(true, reason) == (reason != RoofDirtyReason.Contributor),
+        "Only contributor invalidation is irrelevant to native implicit coverage.");
+}
+// A component removal must resolve retained contributor coverage even when a
+// contributor request was suppressed while implicit coverage was still present.
+var implicitTransition = new RoofObservationInventory();
+implicitTransition.Begin(); implicitTransition.ReplaceGrid(7, 1, [new(new(1, 1), first)], true);
+implicitTransition.Finish();
+implicitTransition.Begin();
+if (RoofObservationPolicy.ShouldDirtyGrid(true, RoofDirtyReason.Contributor))
+    throw new Exception("Contributor changed implicit coverage.");
+Check(implicitTransition.Finish().ChunkReplacements.Count == 0, "Ignored contributor request keeps implicit observation stable.");
+implicitTransition.Begin();
+if (RoofObservationPolicy.ShouldDirtyGrid(false, RoofDirtyReason.GridComponent))
+    implicitTransition.ReplaceGrid(7, 1, [new(new(2, 1), second)], false);
+var transitioned = implicitTransition.Finish();
+Check(!transitioned.GridReplacements.Single().Implicit
+    && transitioned.ChunkReplacements.Single().Layers.Single().Tiles.Single() == new RoofTile(2, 1),
+    "Implicit removal publishes current contributor geometry rather than the old implicit seed.");
+
+var reasons = default(RoofInvalidationCounts).Request(RoofDirtyReason.Contributor)
+    .Request(RoofDirtyReason.Contributor).Request(RoofDirtyReason.Tiles);
+reasons = reasons with { ImplicitContributorSkips = 2, AffectedGridAdmissions = 1 };
+var frames = new FrameDiagnostics();
+FrameSample sample = new(10, 3, 6, 2, 1, 2, 0.5, 1.5, 2, 1, 100, 1, 0, 0, reasons);
+frames.Add(0, sample); frames.Add(1, sample with { Loop = 20 });
+frames.Add(2, sample with { Loop = 4 }); frames.Add(3, sample with { Loop = 8 });
+Check(frames.Baseline.Frames == 1 && frames.FirstTransition.Frames == 1 && frames.RemainingFrames.Frames == 2,
+    "Baseline and first transition never enter the remaining-frame denominator.");
+Check(frames.Baseline.Loop.SumMilliseconds == 10 && frames.FirstTransition.Loop.SumMilliseconds == 20
+    && frames.RemainingFrames.Loop.SumMilliseconds == 12 && frames.RemainingFrames.Loop.MaximumMilliseconds == 8,
+    "Frame buckets preserve sums and maxima independently.");
+Check(frames.RemainingFrames.AllocatedBytes == 200 && frames.RemainingFrames.Gen0Collections == 2
+    && frames.RemainingFrames.RoofInvalidations.ContributorRequests == 4
+    && frames.RemainingFrames.RoofInvalidations.AffectedGridAdmissions == 2,
+    "Work requests, coalesced admissions, allocation volume and collections remain distinct.");
+Check((reasons + reasons) - reasons == reasons, "Cumulative reason snapshots produce frame deltas without losing skipped work.");
+var diagnosticWire = JsonSerializer.SerializeToElement(frames, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Check(diagnosticWire.GetProperty("remainingFrames").GetProperty("frames").GetInt32() == 2
+    && diagnosticWire.GetProperty("remainingFrames").GetProperty("roofInvalidations")
+        .GetProperty("implicitContributorSkips").GetInt64() == 4,
+    "Summary diagnostics expose values with the existing web JSON naming convention.");
+Console.WriteLine($"{checks} focused roof ownership/order/wire/bound/invalidation/frame checks passed.");

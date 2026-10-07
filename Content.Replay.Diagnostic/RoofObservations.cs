@@ -10,6 +10,10 @@ internal static class RoofObservationPolicy
     public const int MaxChunks = 32768;
     public const int MaxTiles = 500_000;
     public const long MaxBytes = 64L * 1024 * 1024;
+    // Native implicit coverage is independent of explicit bits/contributors.
+    // Membership, tile/domain, component/lifecycle and prototype work still resolves.
+    internal static bool ShouldDirtyGrid(bool liveImplicitRoof, RoofDirtyReason reason)
+        => !liveImplicitRoof || reason != RoofDirtyReason.Contributor;
     internal static long InvalidationBytes(int links, int contributors, int grids, int queued,
         long scratch = 0, long admission = 0) => checked(links * 192L + contributors * 256L
             + grids * 384L + queued * 64L + scratch + admission);
