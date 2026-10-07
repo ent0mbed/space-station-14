@@ -10,12 +10,16 @@ public sealed partial class CaptureRunner
     private readonly HashSet<int> _lightingGraphMaps = new();
     private long _pointLightingInspections;
     private long _mapLightingInspections;
+    private long _occluderInspections;
     private long _pointLightingReplacements;
     private long _mapLightingReplacements;
+    private long _occluderReplacements;
     private long _pointLightingDeletes;
     private long _mapLightingDeletes;
+    private long _occluderDeletes;
     private int _initialPointLights;
     private int _initialMapLights;
+    private int _initialOccluders;
 
     private LightingChanges CaptureLighting(List<object> upserts, List<object> audioEvents, bool initial)
     {
@@ -76,6 +80,20 @@ public sealed partial class CaptureRunner
                 present, present ? LightingColorValue(ambient!.AmbientLightColor) : null));
             _mapLightingInspections++;
         }
+        // FrameUpdate has refreshed the native shared-edge cache. Inventory membership
+        // is independent of native rendering trees, viewport visibility and Enabled.
+        var occluders = _entities.AllEntityQueryEnumerator<OccluderComponent>();
+        while (occluders.MoveNext(out var uid, out var occluder))
+        {
+            if (!_entities.TryGetComponent<MetaDataComponent>(uid, out var metadata))
+                throw new InvalidDataException("Native light occluder is missing required metadata.");
+            if (!LightingOwnerLive(metadata)) continue;
+            if (!_entities.TryGetComponent<TransformComponent>(uid, out _))
+                throw new InvalidDataException("Native light occluder is missing its transform.");
+            EnsureLightingGraph(uid, metadata, upserts, audioEvents, initial);
+            _lighting.ObserveOccluder(metadata.NetEntity.Id, occluder.Enabled, occluder.Polygon, occluder.OccludingEdges);
+            _occluderInspections++;
+        }
         var changes = _lighting.Finish();
         foreach (var id in changes.MapDeletes)
             if (!_frameDeleted.Contains(id) && _entities.TryGetEntity(new NetEntity(id), out var uid) && uid is { } live)
@@ -84,7 +102,14 @@ public sealed partial class CaptureRunner
         _mapLightingReplacements += changes.MapReplacements.Count;
         _pointLightingDeletes += changes.PointDeletes.Count;
         _mapLightingDeletes += changes.MapDeletes.Count;
-        if (initial) { _initialPointLights = _lighting.PointCount; _initialMapLights = _lighting.MapCount; }
+        _occluderReplacements += changes.OccluderReplacements.Count;
+        _occluderDeletes += changes.OccluderDeletes.Count;
+        if (initial)
+        {
+            _initialPointLights = _lighting.PointCount;
+            _initialMapLights = _lighting.MapCount;
+            _initialOccluders = _lighting.OccluderCount;
+        }
         return changes;
     }
 
@@ -125,6 +150,16 @@ public sealed partial class CaptureRunner
             if (map != point.MapEntityId)
                 throw new InvalidDataException("Native light map disagrees with final transform ancestry.");
         }
+        foreach (var occluder in _lighting.Occluders)
+        {
+            int? owner = occluder.OwnerId;
+            for (var depth = 0; owner is { } id; depth++)
+            {
+                if (depth > MaxParentDepth || !_fingerprints.ContainsKey(id)
+                    || !_projectedParents.TryGetValue(id, out owner))
+                    throw new InvalidDataException("Incomplete native light occluder parent closure.");
+            }
+        }
     }
 
     private static LightingColor LightingColorValue(Robust.Shared.Maths.Color color)
@@ -132,16 +167,21 @@ public sealed partial class CaptureRunner
 
     private object LightingSummary() => new {
         complete = true, initialPointLights = _initialPointLights, initialMaps = _initialMapLights,
-        pointLightsAtEnd = _lighting.PointCount, mapsAtEnd = _lighting.MapCount,
+        initialOccluders = _initialOccluders,
+        pointLightsAtEnd = _lighting.PointCount, mapsAtEnd = _lighting.MapCount, occludersAtEnd = _lighting.OccluderCount,
         pointReplacements = _pointLightingReplacements, mapReplacements = _mapLightingReplacements,
         pointDeletes = _pointLightingDeletes, mapDeletes = _mapLightingDeletes,
+        occluderReplacements = _occluderReplacements, occluderDeletes = _occluderDeletes,
         scalarPointInspections = _pointLightingInspections, scalarMapInspections = _mapLightingInspections,
+        occluderInspections = _occluderInspections,
+        enabledOccludersAtEnd = _lighting.Occluders.Count(value => value.Enabled),
         actualMasks = new { none = _lighting.Points.Count(value => value.ActualMask.Kind == "none"),
             image = _lighting.Points.Count(value => value.ActualMask.Kind == "image"),
             unavailable = _lighting.Points.Count(value => value.ActualMask.Kind == "unavailable") },
         retainedBytes = _lighting.RetainedBytes, peakLiveStagedBytes = _lighting.PeakLiveStagedBytes,
-        limits = new { owners = LightingObservationPolicy.MaxOwners, retainedBytes = LightingObservationPolicy.MaxRetainedBytes },
-        accounting = "Owned JSON value bytes plus 256 per point/192 per map, live and pending values, 64 per sampled projection, 16 per removal. This is not an all-allocation/process cap; temporary frame serialization uses the existing 64 MiB record/1 GiB scene output guards. Canonical Go also applies its combined 512 MiB guard.",
+        limits = new { owners = LightingObservationPolicy.MaxOwners, retainedBytes = LightingObservationPolicy.MaxRetainedBytes,
+            occluderVertices = LightingObservationPolicy.MaxOccluderVertices },
+        accounting = "Owned JSON value bytes plus 256 per point/192 per map/256 plus 8 per vertex per occluder, live and pending values, 64 per sampled projection, 16 per removal. Geometry is copied only on change and reused for scalar-only changes. This is not an all-allocation/process cap; temporary frame serialization uses the existing 64 MiB record/1 GiB scene output guards. Canonical Go also applies its combined 512 MiB guard.",
         unavailable = new[] { "lighting-rendering", "roofs", "tile-emission", "point-shadows", "eye-fov", "sun", "ambient-occlusion" }
     };
 

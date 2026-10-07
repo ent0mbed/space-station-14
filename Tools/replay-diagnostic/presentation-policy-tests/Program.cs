@@ -1,4 +1,5 @@
 using Content.Replay.Diagnostic;
+using System.Numerics;
 using System.Text.Json;
 
 var checks = 0;
@@ -119,7 +120,75 @@ Check(nullPoint.RootElement.GetProperty("mapEntityId").ValueKind == JsonValueKin
 using var mapJson = JsonDocument.Parse(JsonSerializer.Serialize(map, json));
 Check(mapJson.RootElement.GetProperty("ambientLinear").ValueKind == JsonValueKind.Null
     && !mapJson.RootElement.GetProperty("ambientPresent").GetBoolean(), "Missing ambient must remain explicitly absent.");
-var many = new LightingChanges(true, Enumerable.Range(1, 1001).Select(id => point with { OwnerId = id }).ToList(), [], [map], []);
+var many = new LightingChanges(true, Enumerable.Range(1, 1001).Select(id => point with { OwnerId = id }).ToList(), [], [map], [], [], []);
 Check(many.Chunk(0, true).PointReplacements.Count() == 1000 && many.Chunk(1, true).PointReplacements.Count() == 1
     && !many.Chunk(1, true).MapReplacements.Any() && many.Chunk(1, true).Complete, "Initial chunks must collectively preserve complete lighting membership.");
 Console.WriteLine($"Presentation and lighting policy/lifetime/shape/budget checks passed: {checks}. No engine or replay started.");
+
+var beforeOccluders = checks;
+Vector2[] clockwise = [new(-0.5f, 0.5f), new(0.5f, 0.5f), new(0.5f, -0.5f), new(-0.5f, -0.5f)];
+var occluders = new LightingObservationInventory();
+occluders.Begin(); occluders.ObserveOccluder(clientOwnerId, false, clockwise, 5);
+var occluderBaseline = occluders.Finish().OccluderReplacements.Single();
+Check(!occluderBaseline.Enabled && occluderBaseline.SharedEdges == 5
+    && occluderBaseline.LocalVertices.SequenceEqual(clockwise.Select(v => new LightingOffset(v.X, v.Y))),
+    "Clockwise native geometry, edge indices and disabled client owner must remain exact.");
+clockwise[0] = new(-1, 0.5f);
+Check(occluderBaseline.LocalVertices[0] == new LightingOffset(-0.5f, 0.5f), "Borrowed native array mutated owned geometry.");
+clockwise[0] = new(-0.5f, 0.5f);
+occluders.Begin(); occluders.ObserveOccluder(clientOwnerId, false, clockwise, 5);
+Check(occluders.Finish().OccluderReplacements.Count == 0, "Unchanged geometry allocated/emitted a replacement.");
+occluders.Begin(); occluders.ObserveOccluder(clientOwnerId, true, clockwise, 10);
+var scalarOccluder = occluders.Finish().OccluderReplacements.Single();
+Check(scalarOccluder.Enabled && scalarOccluder.SharedEdges == 10
+    && ReferenceEquals(occluderBaseline.LocalVertices, scalarOccluder.LocalVertices),
+    "Enabled/shared-mask-only replacement must reuse immutable owned geometry.");
+var counterclockwise = clockwise.Reverse().ToArray();
+occluders.Begin(); occluders.ObserveOccluder(clientOwnerId, true, counterclockwise, 10);
+Check(occluders.Finish().OccluderReplacements.Count == 0, "Native full reversal changed normalized geometry or remapped mask.");
+counterclockwise[3] = new(-1, 0.5f);
+occluders.Begin(); occluders.ObserveOccluder(clientOwnerId, false, counterclockwise, 1);
+var geometryOccluder = occluders.Finish().OccluderReplacements.Single();
+Check(geometryOccluder.LocalVertices[0] == new LightingOffset(-1, 0.5f) && geometryOccluder.SharedEdges == 1
+    && !ReferenceEquals(scalarOccluder.LocalVertices, geometryOccluder.LocalVertices),
+    "Changed counterclockwise geometry needs its own clockwise copy without edge-mask remapping.");
+counterclockwise[3] = new(-2, 0.5f);
+Check(geometryOccluder.LocalVertices[0] == new LightingOffset(-1, 0.5f), "Changed geometry borrowed its native array.");
+occluders.Begin();
+var occluderRemoval = occluders.Finish();
+Check(occluderRemoval.OccluderDeletes.SequenceEqual([clientOwnerId]) && occluders.OccluderCount == 0
+    && occluders.RetainedBytes == 0, "Component/owner removal must release geometry and emit a delete.");
+var invalidOccluders = new LightingObservationInventory();
+invalidOccluders.Begin();
+Reject(() => invalidOccluders.ObserveOccluder(0, true, clockwise, 0), "Zero occluder identity accepted.");
+Reject(() => invalidOccluders.ObserveOccluder(1, true, clockwise[..2], 0), "Too few vertices accepted.");
+Reject(() => invalidOccluders.ObserveOccluder(1, true, Enumerable.Repeat(Vector2.One, 9).ToArray(), 0), "Too many vertices accepted.");
+Reject(() => invalidOccluders.ObserveOccluder(1, true, clockwise, 16), "Out-of-range shared-edge bit accepted.");
+Reject(() => invalidOccluders.ObserveOccluder(1, true, [new(float.NaN, 0), clockwise[1], clockwise[2]], 0), "Nonfinite geometry accepted.");
+Reject(() => invalidOccluders.ObserveOccluder(1, true, [clockwise[0], clockwise[1], clockwise[0]], 0), "Duplicate vertex accepted.");
+Reject(() => invalidOccluders.ObserveOccluder(1, true, [new(0, 0), new(1, 0), new(2, 0)], 0), "Degenerate polygon accepted.");
+Reject(() => invalidOccluders.ObserveOccluder(1, true, [new(0, 0), new(2, 0), new(1, 0.5f), new(2, 2), new(0, 2)], 0), "Concave polygon accepted.");
+var combinedOwners = new LightingObservationInventory(maxOwners: 2);
+combinedOwners.Begin(); combinedOwners.Observe(point); combinedOwners.Observe(map);
+Reject(() => combinedOwners.ObserveOccluder(5, true, clockwise, 0), "Occluders bypassed combined lighting owner budget.");
+var occluderBytes = new LightingObservationInventory(maxBytes: 200);
+occluderBytes.Begin();
+Reject(() => occluderBytes.ObserveOccluder(1, true, clockwise, 0), "Occluders bypassed combined live/staged byte budget.");
+using var occluderJson = JsonDocument.Parse(JsonSerializer.Serialize(occluderBaseline, json));
+Check(occluderJson.RootElement.GetProperty("ownerId").GetInt32() == clientOwnerId
+    && !occluderJson.RootElement.GetProperty("enabled").GetBoolean()
+    && occluderJson.RootElement.GetProperty("sharedEdges").GetByte() == 5
+    && occluderJson.RootElement.GetProperty("localVertices")[0].GetProperty("y").GetSingle() == 0.5f,
+    "Occluder wire fields/values changed.");
+var manyOccluders = many with { OccluderReplacements = Enumerable.Range(1, 1001)
+    .Select(id => occluderBaseline with { OwnerId = id }).ToList() };
+Check(manyOccluders.Chunk(0, true).OccluderReplacements.Count() == 1000
+    && manyOccluders.Chunk(1, true).OccluderReplacements.Count() == 1,
+    "Snapshot chunks lost complete occluder inventory.");
+using var emptyLightingJson = JsonDocument.Parse(JsonSerializer.Serialize(new LightingChanges(true, [], [], [], [], [], []).Chunk(0, false), json));
+Check(emptyLightingJson.RootElement.GetProperty("occluderReplacements").GetArrayLength() == 0
+    && emptyLightingJson.RootElement.GetProperty("occluderDeletes").GetArrayLength() == 0,
+    "Required empty occluder replacement/removal arrays were omitted.");
+Check(LightingObservationPolicy.OccluderCapability == "native-light-occluder-observations/1"
+    && LightingObservationPolicy.MaxOccluderVertices == 8, "Occluder capability/native hull bound changed.");
+Console.WriteLine($"Focused native occluder winding/ownership/removal/budget checks passed: {checks - beforeOccluders}. No engine or replay started.");

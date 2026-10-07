@@ -276,7 +276,8 @@ public sealed partial class CaptureRunner
             var chunkCount = index == 0 ? ViewerMetadataPolicy.InitialSnapshotChunks(upserts.Count, spritePresentationReplacements.Count) : 1;
             if (lighting != null && index == 0)
                 chunkCount = Math.Max(1, Math.Max(chunkCount, Math.Max((lighting.PointReplacements.Count + 999) / 1000,
-                    (lighting.MapReplacements.Count + 999) / 1000)));
+                    Math.Max((lighting.MapReplacements.Count + 999) / 1000,
+                        (lighting.OccluderReplacements.Count + 999) / 1000))));
             for (var chunk = 0; chunk < chunkCount; chunk++)
             {
                 var frame = new { kind = index == 0 ? "snapshot" : "delta", sequence = index,

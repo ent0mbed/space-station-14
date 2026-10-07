@@ -3,6 +3,8 @@ namespace Content.Replay.Diagnostic;
 internal static class LightingObservationPolicy
 {
     public const string Capability = "native-point-map-lighting-observations/1";
+    public const string OccluderCapability = "native-light-occluder-observations/1";
+    public const int MaxOccluderVertices = 8;
     public const int MaxOwners = 250_000;
     public const long MaxRetainedBytes = 64L * 1024 * 1024;
 
