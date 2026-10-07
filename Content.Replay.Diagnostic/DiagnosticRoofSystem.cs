@@ -10,11 +10,15 @@ using Robust.Shared.Prototypes;
 
 namespace Content.Replay.Diagnostic;
 
-// Register before the native event bus freezes. Queue identities only: handled
-// states are sampled after native FrameUpdate, never during an auto-state write.
+// Register broadcast/lifecycle observers before the native event bus freezes.
+// ComponentHandleState permits only the native handler per component, so recorded
+// component candidates are queued separately after native FrameUpdate.
 public sealed class DiagnosticRoofSystem : EntitySystem
 {
     [Dependency] private IPrototypeManager _prototypes = default!;
+    [Dependency] private IComponentFactory _factory = default!;
+    private readonly HashSet<ushort> _stateComponents = [];
+    private readonly HashSet<ushort> _gridComponents = [];
     internal readonly HashSet<EntityUid> Changed = [];
     internal readonly HashSet<EntityUid> GridChanged = [];
     internal bool TileDefinitionsChanged;
@@ -22,34 +26,45 @@ public sealed class DiagnosticRoofSystem : EntitySystem
     public override void Initialize()
     {
         base.Initialize();
-        ObserveState<MapGridComponent>();
-        ObserveState<RoofComponent>();
-        ObserveState<ImplicitRoofComponent>();
-        ObserveState<IsRoofComponent>();
-        ObserveState<FixturesComponent>();
-        ObserveState<PhysicsComponent>();
-        ObserveState<ContainerManagerComponent>();
-        SubscribeLocalEvent<TransformComponent, PhysicsBodyTypeChangedEvent>(OnBodyType);
+        ObserveStateType<MapGridComponent>(true);
+        ObserveStateType<RoofComponent>(true);
+        ObserveStateType<ImplicitRoofComponent>(true);
+        ObserveStateType<IsRoofComponent>();
+        ObserveStateType<FixturesComponent>();
+        ObserveStateType<PhysicsComponent>();
+        ObserveStateType<ContainerManagerComponent>();
+        SubscribeLocalEvent<PhysicsBodyTypeChangedEvent>(OnBodyType);
         SubscribeLocalEvent<CollisionChangeEvent>(OnCollision);
-        SubscribeLocalEvent<TransformComponent, EntGotInsertedIntoContainerMessage>(OnInserted);
-        SubscribeLocalEvent<TransformComponent, EntGotRemovedFromContainerMessage>(OnRemoved);
+        SubscribeLocalEvent<EntInsertedIntoContainerMessage>(OnInserted);
+        SubscribeLocalEvent<EntRemovedFromContainerMessage>(OnRemoved);
         EntityManager.ComponentAdded += OnAdded;
         EntityManager.ComponentRemoved += OnComponentRemoved;
         EntityManager.EntityDeleted += OnDeleted;
         _prototypes.PrototypesReloaded += OnPrototypes;
     }
 
-    private void ObserveState<T>() where T : Component
-        => SubscribeLocalEvent<T, ComponentHandleState>(OnState);
-    private void OnState<T>(EntityUid uid, T component, ref ComponentHandleState args) where T : Component
+    private void ObserveStateType<T>(bool grid = false) where T : Component
     {
-        Mark(uid);
-        if (component is MapGridComponent or RoofComponent or ImplicitRoofComponent) GridChanged.Add(uid);
+        var id = _factory.GetRegistration(typeof(T)).NetID
+            ?? throw new InvalidDataException("Native roof invalidation component has no network identity.");
+        _stateComponents.Add(id);
+        if (grid) _gridComponents.Add(id);
     }
-    private void OnBodyType(EntityUid uid, TransformComponent component, ref PhysicsBodyTypeChangedEvent args) => Mark(uid);
+    internal void ObserveReplayState(GameState state)
+    {
+        foreach (var entity in state.EntityStates.Value)
+            foreach (var change in entity.ComponentChanges.Value)
+            {
+                if (!_stateComponents.Contains(change.NetID)
+                    || !EntityManager.TryGetEntity(entity.NetEntity, out var uid) || uid is not { } owner) continue;
+                Mark(owner);
+                if (_gridComponents.Contains(change.NetID)) GridChanged.Add(owner);
+            }
+    }
+    private void OnBodyType(ref PhysicsBodyTypeChangedEvent args) => Mark(args.Entity);
     private void OnCollision(ref CollisionChangeEvent args) => Mark(args.BodyUid);
-    private void OnInserted(EntityUid uid, TransformComponent component, EntGotInsertedIntoContainerMessage args) => Mark(uid);
-    private void OnRemoved(EntityUid uid, TransformComponent component, EntGotRemovedFromContainerMessage args) => Mark(uid);
+    private void OnInserted(EntInsertedIntoContainerMessage args) { Mark(args.Entity); Mark(args.Container.Owner); }
+    private void OnRemoved(EntRemovedFromContainerMessage args) { Mark(args.Entity); Mark(args.Container.Owner); }
     private void OnDeleted(Entity<MetaDataComponent> entity) => Mark(entity.Owner);
     private void OnAdded(AddedComponentEventArgs args) => ComponentChanged(args.BaseArgs);
     private void OnComponentRemoved(RemovedComponentEventArgs args) => ComponentChanged(args.BaseArgs);

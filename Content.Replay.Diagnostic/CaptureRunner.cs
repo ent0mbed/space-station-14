@@ -263,7 +263,7 @@ public sealed partial class CaptureRunner
             }
             var viewerMetadata = CaptureViewerMetadata(state, checkpoint.FullState, messages, upserts, audioEvents, index == 0);
             var lighting = Program.CaptureLighting ? CaptureLighting(upserts, audioEvents, index == 0) : null;
-            var roofs = roofCapture?.Capture(uid => ProjectNative(uid, upserts, audioEvents, index == 0));
+            var roofs = roofCapture?.Capture(state, uid => ProjectNative(uid, upserts, audioEvents, index == 0));
             InspectSpritePresentation(index > 0);
             if (index > 0) ProjectPresentationAppearance(upserts, audioEvents);
             ProjectMoved(upserts, audioEvents, index == 0);

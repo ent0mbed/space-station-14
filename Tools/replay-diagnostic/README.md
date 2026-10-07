@@ -92,7 +92,7 @@ Grid replacement preserves chunks; grid deletion removes them all. An observed
 roof grid may have empty coverage. Snapshot arrays use 1000-item slices; deltas
 remain one transaction subject to the existing record/output guards.
 
-Roof membership is enumerated once. Native tile, handled-state, lifecycle,
+Roof membership is enumerated once. Native tile, replay component-state, lifecycle,
 contributor/ancestor movement, lookup and prototype invalidations select affected
 grids; retained scalar stamps detect local changes. Stable grid movement uses the
 scene pose and retains immutable local geometry. Roof limits are separate:

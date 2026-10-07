@@ -3,6 +3,7 @@ using Content.Shared.Light.EntitySystems;
 using Content.Shared.Maps;
 using Robust.Client.GameObjects;
 using Robust.Shared.Map.Components;
+using Robust.Shared.GameStates;
 using Robust.Shared.Physics;
 using Robust.Shared.Physics.Components;
 
@@ -85,7 +86,7 @@ internal sealed class NativeRoofCapture : IDisposable
     private bool Live(EntityUid uid) => _entities.TryGetComponent<MetaDataComponent>(uid, out var metadata)
         && metadata.EntityLifeStage >= EntityLifeStage.Initialized && metadata.EntityLifeStage < EntityLifeStage.Terminating;
 
-    public RoofChanges Capture(Action<EntityUid> ensureOwner)
+    public RoofChanges Capture(GameState state, Action<EntityUid> ensureOwner)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(NativeRoofCapture));
         _inventory.Begin();
@@ -96,6 +97,7 @@ internal sealed class NativeRoofCapture : IDisposable
             var contributors = _entities.AllEntityQueryEnumerator<IsRoofComponent>();
             while (contributors.MoveNext(out var uid, out _)) if (Live(uid)) _changedContributors.Add(uid);
         }
+        _observer.ObserveReplayState(state);
         foreach (var uid in _observer.Changed)
         {
             if (Live(uid) && _entities.HasComponent<MapGridComponent>(uid)) AddGrid(uid);
@@ -106,8 +108,8 @@ internal sealed class NativeRoofCapture : IDisposable
         if (_observer.TileDefinitionsChanged) foreach (var uid in _grids) Dirty(uid);
 
         // These bounded inventories contain roof/grid members, never all entities
-        // or all tiles. Native auto-state callbacks run before assignments; sample
-        // final scalar values here after FrameUpdate, including paused members.
+        // or all tiles. Sample final scalar values after native FrameUpdate,
+        // including paused members; replay component candidates are queued above.
         foreach (var (uid, contributor) in _contributors)
             if (!TryContributor(uid, out var stamp) || stamp != contributor.Stamp) _changedContributors.Add(uid);
         foreach (var uid in _changedContributors) RefreshContributor(uid);
