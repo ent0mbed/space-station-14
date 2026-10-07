@@ -13,6 +13,13 @@ public sealed partial class CaptureRunner
     {
         public readonly EntityUid Uid = uid;
         public AnimationEligibilityEntry Eligibility;
+        public NegativePhaseEntry NegativePhases;
+
+        public void ResetAnimationCaches()
+        {
+            Eligibility = default;
+            NegativePhases = default;
+        }
     }
 
     private readonly Dictionary<int, PresentationOwner> _presentationOwners = new();
@@ -26,6 +33,7 @@ public sealed partial class CaptureRunner
     private long _presentationCombinedPeakBytes;
     private long _queueOwnerVisits, _queueLayerVisits, _postOwnerVisits, _postLayerVisits;
     private long _appearanceLayerComparisons, _phaseLayerVisits, _baselineOwnerVisits, _baselineLayerVisits;
+    private long _phaseClassificationScans, _phaseNegativeCacheHits, _phaseNegativeLayerVisitsSkipped, _phaseUnsafeScans;
     private long _presentationArraysAllocated, _presentationSerializations;
     private double _queueMs, _fusedInspectionMs, _appearanceProjectionMs, _baselineDrainMs, _presentationCommitMs, _presentationSerializationMs;
     private readonly List<object> _ordinaryPhaseProbe = new();
@@ -51,7 +59,7 @@ public sealed partial class CaptureRunner
 
     private void ResetAnimationEligibility()
     {
-        foreach (var owner in _presentationOwners.Values) owner.Eligibility = default;
+        foreach (var owner in _presentationOwners.Values) owner.ResetAnimationCaches();
     }
 
     private static bool TryPhaseState(SpriteComponent component, SpriteComponent.Layer layer, out RSI.State state)
@@ -75,7 +83,7 @@ public sealed partial class CaptureRunner
         _queueOwnerVisits++;
         if (syncSprites.HasComponent(uid))
         {
-            if (owner != null) owner.Eligibility = default;
+            owner?.ResetAnimationCaches();
             return;
         }
         var layers = GetNativePresentationLayers(component);
@@ -94,7 +102,7 @@ public sealed partial class CaptureRunner
         }
         else
         {
-            if (owner != null) owner.Eligibility = default;
+            owner?.ResetAnimationCaches();
             eligible = ScanOrdinaryEligibility(component, layers);
         }
         if (!eligible) return;
@@ -152,7 +160,7 @@ public sealed partial class CaptureRunner
                 && metadata.EntityLifeStage < EntityLifeStage.Terminating)
                 QueueOrdinarySprite(owner.Uid, sprite, system, in syncSprites, owner);
             else
-                owner.Eligibility = default;
+                owner.ResetAnimationCaches();
         // New exported network owners need their first native tick, too.
         foreach (var entity in state.EntityStates.Value)
             if (!_presentationOwners.ContainsKey(entity.NetEntity.Id)
@@ -181,6 +189,7 @@ public sealed partial class CaptureRunner
                 throw new InvalidDataException($"Retained presentation owner {id} disappeared without observed deletion.");
             if (!sprites.TryGetComponent(uid, out var component))
             {
+                owner.ResetAnimationCaches();
                 if (inspectAppearance && _previousSprites.ContainsKey(id)) _appearanceCandidates.Add((id, uid));
                 continue;
             }
@@ -191,6 +200,7 @@ public sealed partial class CaptureRunner
                 && ReadSpriteHead(component, definition.Head.NativeLocalBounds) == definition.Head
                 && layers.Length == definition.Layers.Length;
             var reason = syncSprites.HasComponent(uid) ? "native-realtime-sync" : null;
+            var readPhases = BeginPhaseInspection(owner, component, layers.Length, reason != null, out var phaseStamp);
             var count = 0;
             for (var index = 0; index < layers.Length; index++)
             {
@@ -203,17 +213,49 @@ public sealed partial class CaptureRunner
                         || ReadLayerValue(uid, component, layer, index, layers.Length, material) != definition!.Layers[index])
                         matches = false;
                 }
-                if (reason == null)
+                if (readPhases)
                 {
                     _phaseLayerVisits++;
                     ReadPhaseLayer(id, component, layer, index, ref count);
                 }
             }
+            if (readPhases)
+                owner.NegativePhases = component.ReplayAnimationEligibilityCacheSafe
+                    ? NegativePhaseEntry.AfterScan(phaseStamp, ReadEligibilityStamp(component, layers.Length), count)
+                    : default;
             if (inspectAppearance && matches && !NativePostAppearanceMatches(component, definition!)) matches = false;
             if (!matches) _appearanceCandidates.Add((id, uid));
             StagePresentation(id, spriteId, VectorValue.From(component.Offset), reason, count, !matches);
         }
         _fusedInspectionMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+    }
+
+    private bool BeginPhaseInspection(PresentationOwner owner, SpriteComponent component,
+        int layerCount, bool synced, out AnimationEligibilityStamp before)
+    {
+        before = default;
+        if (synced)
+        {
+            owner.NegativePhases = default;
+            return false;
+        }
+        if (component.ReplayAnimationEligibilityCacheSafe)
+        {
+            before = ReadEligibilityStamp(component, layerCount);
+            if (owner.NegativePhases.Matches(before))
+            {
+                _phaseNegativeCacheHits++;
+                _phaseNegativeLayerVisitsSkipped += layerCount;
+                return false;
+            }
+        }
+        else
+        {
+            owner.NegativePhases = default;
+            _phaseUnsafeScans++;
+        }
+        _phaseClassificationScans++;
+        return true;
     }
 
     private void ProjectPresentationAppearance(List<object> upserts, List<object> audioEvents)

@@ -25,3 +25,14 @@ internal readonly record struct AnimationEligibilityEntry(AnimationEligibilitySt
         AnimationEligibilityStamp after, bool eligible)
         => before == after ? new(before, eligible, true) : default;
 }
+
+// Ordinary queue eligibility excludes hidden/manual layers; phase presence does
+// not. Publish only a complete negative phase scan, never a cached timer value.
+internal readonly record struct NegativePhaseEntry(AnimationEligibilityStamp Stamp, bool Valid)
+{
+    public bool Matches(AnimationEligibilityStamp stamp) => Valid && Stamp == stamp;
+
+    public static NegativePhaseEntry AfterScan(AnimationEligibilityStamp before,
+        AnimationEligibilityStamp after, int phaseCount)
+        => phaseCount == 0 && before == after ? new(before, true) : default;
+}

@@ -319,4 +319,148 @@ Check(!AnimationEligibilityEntry.AfterScan(stamp, stamp with { ResourceEpoch = 2
     "A resource mutation during scanning published a cache entry.");
 Check(!AnimationEligibilityEntry.AfterScan(stamp, stamp with { Revision = 2 }, true).TryGet(stamp, out _),
     "An owner mutation during scanning published a cache entry.");
+
+// Exercise the production fused inspector against live native query dictionaries.
+// These owners have no exported definition unless explicitly installed below.
+var phaseRunner = new CaptureRunner();
+var phaseManager = new ClientEntityManager();
+var phaseUid = new EntityUid(200);
+var phaseSprite = Sprite(phaseUid, Rsi(1));
+var phaseSprites = new Dictionary<EntityUid, IComponent> { [phaseUid] = phaseSprite };
+var phaseMeta = new MetaDataComponent { Owner = phaseUid };
+typeof(MetaDataComponent).GetProperty(nameof(MetaDataComponent.NetEntity))!.SetValue(phaseMeta, new NetEntity(200));
+typeof(MetaDataComponent).GetProperty(nameof(MetaDataComponent.EntityLifeStage))!.SetValue(phaseMeta, EntityLifeStage.Initialized);
+var phaseMetadata = new Dictionary<EntityUid, IComponent>
+{
+    [phaseUid] = phaseMeta
+};
+var phaseSync = new Dictionary<EntityUid, IComponent>();
+int TraitIndex(Type type) => (int) typeof(CompIdx).GetMethod("ArrayIndex", BindingFlags.Static | BindingFlags.NonPublic)!
+    .MakeGenericMethod(type).Invoke(null, null)!;
+var traitTypes = new[] { typeof(SpriteComponent), typeof(MetaDataComponent), typeof(SyncSpriteComponent) };
+var traits = new Dictionary<EntityUid, IComponent>[traitTypes.Max(TraitIndex) + 1];
+traits[TraitIndex(typeof(SpriteComponent))] = phaseSprites;
+traits[TraitIndex(typeof(MetaDataComponent))] = phaseMetadata;
+traits[TraitIndex(typeof(SyncSpriteComponent))] = phaseSync;
+typeof(EntityManager).GetField("_entTraitArray", Private)!.SetValue(phaseManager, traits);
+Inject(phaseRunner, "_entities", phaseManager);
+Call(phaseRunner, "TrackPresentationOwner", 200, phaseUid);
+long PhaseCounter(string name) => (long) typeof(CaptureRunner).GetField(name, Private)!.GetValue(phaseRunner)!;
+Array InspectPhases(bool appearance = false)
+{
+    Call(phaseRunner, "InspectSpritePresentation", appearance);
+    var pending = (IDictionary) typeof(CaptureRunner).GetField("_pendingPresentation", Private)!.GetValue(phaseRunner)!;
+    return (Array) pending[200]!.GetType().GetProperty("Layers")!.GetValue(pending[200])!;
+}
+void CheckPhase(float timer, bool auto, bool reversed)
+{
+    var phases = InspectPhases();
+    Check(phases.Length == 1, "Multi-frame phase was suppressed.");
+    var value = phases.GetValue(0)!;
+    Check((int) value.GetType().GetProperty("AnimationFrame")!.GetValue(value)! == phaseSprite.Layers[0].AnimationFrame
+        && (float) value.GetType().GetProperty("AnimationTimeLeft")!.GetValue(value)! == timer
+        && (bool) value.GetType().GetProperty("AutoAnimated")!.GetValue(value)! == auto
+        && (bool) value.GetType().GetProperty("Reversed")!.GetValue(value)! == reversed,
+        "Positive phase path altered the native timer or flags.");
+}
+Check(InspectPhases().Length == 0, "Static RSI unexpectedly had a phase.");
+var phaseVisits = PhaseCounter("_phaseLayerVisits");
+Check(InspectPhases().Length == 0 && PhaseCounter("_phaseLayerVisits") == phaseVisits
+    && PhaseCounter("_phaseNegativeCacheHits") == 1 && PhaseCounter("_phaseNegativeLayerVisitsSkipped") == 1,
+    "Stable negative classification did not skip exactly one phase lookup.");
+system.SetBaseRsi((phaseUid, phaseSprite), Rsi(3));
+phaseSprite.Layers[0].AnimationFrame = 1;
+phaseSprite.Layers[0].AnimationTimeLeft = 0.375f;
+phaseSprite.Layers[0].AutoAnimated = false;
+phaseSprite.Layers[0].Visible = false;
+phaseSprite.Layers[0].Reversed = true;
+CheckPhase(0.375f, false, true);
+phaseSprite.Layers[0].AnimationTimeLeft = -0.125f;
+phaseVisits = PhaseCounter("_phaseLayerVisits");
+CheckPhase(-0.125f, false, true);
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits + 1,
+    "Hidden/manual multi-frame owner cached its live phase.");
+
+// State/base/layer and resource changes must promote a cached negative owner.
+system.SetBaseRsi((phaseUid, phaseSprite), Rsi(1)); InspectPhases();
+var phaseRsi = phaseSprite.BaseRSI!;
+phaseRsi.AddState(State(phaseRsi, "animated", 2));
+phaseSprite.Layers[0].AnimationTimeLeft = -0.0625f;
+CheckPhase(-0.0625f, false, true);
+phaseRsi.RemoveState("animated"); Check(InspectPhases().Length == 0, "Removed RSI state retained a phase.");
+phaseVisits = PhaseCounter("_phaseLayerVisits"); InspectPhases();
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits, "Missing-state negative result was not cached.");
+system.LayerSetRsi(phaseSprite.Layers[0], Rsi(2));
+Check(InspectPhases().Length == 1, "Layer RSI replacement reused a negative entry.");
+system.LayerSetRsiState(phaseSprite.Layers[0], RSI.StateId.Invalid); InspectPhases();
+system.LayerSetRsiState(phaseSprite.Layers[0], "animated");
+Check(InspectPhases().Length == 1, "State replacement reused a negative entry.");
+system.CopySprite((emptyViewSource.Owner, emptyViewSource), (phaseUid, phaseSprite)); InspectPhases();
+var insertedPhase = system.AddBlankLayer((phaseUid, phaseSprite));
+system.LayerSetRsi(insertedPhase, Rsi(2)); system.LayerSetRsiState(insertedPhase, "animated");
+Check(InspectPhases().Length == 1, "Blank-to-animated insertion reused an empty negative entry.");
+system.RemoveLayer((phaseUid, phaseSprite), insertedPhase.Index, out _);
+Check(InspectPhases().Length == 0, "Layer removal retained a phase.");
+
+phaseSprite = Sprite(phaseUid, Rsi(1)); phaseSprites[phaseUid] = phaseSprite; InspectPhases();
+phaseSprites[phaseUid] = Sprite(phaseUid, Rsi(2));
+Check(InspectPhases().Length == 1, "Same-UID component replacement reused a negative entry.");
+phaseSprites[phaseUid] = phaseSprite; InspectPhases();
+phaseSync[phaseUid] = new SyncSpriteComponent { Owner = phaseUid }; InspectPhases();
+phaseSync.Remove(phaseUid); phaseVisits = PhaseCounter("_phaseLayerVisits"); InspectPhases();
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits + 1, "SyncSprite transition retained a negative entry.");
+Call(phaseRunner, "ResetAnimationEligibility"); phaseVisits = PhaseCounter("_phaseLayerVisits"); InspectPhases();
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits + 1, "World/checkpoint reset retained a negative entry.");
+phaseSprites.Remove(phaseUid); Call(phaseRunner, "InspectSpritePresentation", false);
+phaseSprites[phaseUid] = phaseSprite; phaseVisits = PhaseCounter("_phaseLayerVisits"); InspectPhases();
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits + 1, "Missing sprite retained a negative entry.");
+Call(phaseRunner, "OnNativeDelete", new Entity<MetaDataComponent>(phaseUid, phaseMeta));
+phaseVisits = PhaseCounter("_phaseLayerVisits"); InspectPhases();
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits + 1, "Native deletion retained a negative entry.");
+Call(phaseRunner, "TrackPresentationOwner", 200, new EntityUid(202));
+Call(phaseRunner, "TrackPresentationOwner", 200, phaseUid);
+phaseVisits = PhaseCounter("_phaseLayerVisits"); InspectPhases();
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits + 1, "Owner UID rebinding retained a negative entry.");
+
+// A negative cache hit still walks appearance and stages current offset/rebinds.
+var diagnosticType = typeof(CaptureRunner);
+var bounds = Activator.CreateInstance(diagnosticType.GetNestedType("BoundsValue", BindingFlags.NonPublic)!)!;
+var head = diagnosticType.GetMethod("ReadSpriteHead", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [phaseSprite, bounds])!;
+var layerValues = Array.CreateInstance(diagnosticType.GetNestedType("LayerValue", BindingFlags.NonPublic)!, 1);
+var posts = Array.CreateInstance(diagnosticType.GetNestedType("PostShaderValue", BindingFlags.NonPublic)!, 0);
+var definition = Activator.CreateInstance(diagnosticType.GetNestedType("SpriteDefinition", BindingFlags.NonPublic)!,
+    [1, head, layerValues, posts, Array.Empty<byte>()])!;
+var definitions = diagnosticType.GetField("_spriteDefinitions", Private)!.GetValue(phaseRunner)!;
+((IDictionary) definitions.GetType().GetField("_definitions", Private)!.GetValue(definitions)!)[1] = definition;
+((IDictionary) diagnosticType.GetField("_previousSprites", Private)!.GetValue(phaseRunner)!)[200] = 1;
+phaseSprite.Offset = new System.Numerics.Vector2(0.25f, -0.5f);
+phaseVisits = PhaseCounter("_phaseLayerVisits");
+var comparisons = PhaseCounter("_appearanceLayerComparisons");
+InspectPhases(true);
+var pendingPhase = ((IDictionary) diagnosticType.GetField("_pendingPresentation", Private)!.GetValue(phaseRunner)!)[200]!;
+var pendingOffset = pendingPhase.GetType().GetProperty("Offset")!.GetValue(pendingPhase)!;
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits && PhaseCounter("_appearanceLayerComparisons") == comparisons + 1
+    && ((IList) diagnosticType.GetField("_appearanceCandidates", Private)!.GetValue(phaseRunner)!).Count == 1
+    && (float) pendingOffset.GetType().GetProperty("X")!.GetValue(pendingOffset)! == 0.25f,
+    "Negative phase hit skipped appearance mismatch or current offset staging.");
+
+// Shared layers can mutate without notifying their prior owner: always full-scan.
+var phaseAlias = Sprite(new EntityUid(201), Rsi(1));
+system.AddLayer((phaseAlias.Owner, phaseAlias), phaseSprite.Layers[0]);
+phaseVisits = PhaseCounter("_phaseLayerVisits"); InspectPhases(); InspectPhases();
+Check(PhaseCounter("_phaseLayerVisits") == phaseVisits + 2 && PhaseCounter("_phaseUnsafeScans") == 2,
+    "Unsafe alias owner cached a negative result.");
+system.LayerSetRsi(phaseAlias.Layers[1], Rsi(2));
+Check(InspectPhases().Length == 1, "Aliased negative-to-positive mutation was suppressed.");
+phaseSprite = Sprite(phaseUid, Rsi(1)); phaseSprites[phaseUid] = phaseSprite; InspectPhases();
+for (var i = 1; i < 257; i++) phaseSprite.Layers.Add(new SpriteComponent.Layer((phaseUid, phaseSprite), i));
+try { InspectPhases(); throw new InvalidOperationException("Negative phase hit skipped the layer cap."); }
+catch (InvalidDataException) { checks++; }
+Call(phaseRunner, "RemoveProjection", 200, new List<int>(), new List<object>());
+Check(((IDictionary) diagnosticType.GetField("_presentationOwners", Private)!.GetValue(phaseRunner)!).Count == 0,
+    "Owner removal retained phase classification storage.");
+Check(!NegativePhaseEntry.AfterScan(stamp, stamp with { ResourceEpoch = 2 }, 0).Matches(stamp)
+    && !NegativePhaseEntry.AfterScan(stamp, stamp with { Revision = 2 }, 0).Matches(stamp)
+    && !NegativePhaseEntry.AfterScan(stamp, stamp, 1).Matches(stamp),
+    "Incomplete or positive phase scan published a negative entry.");
 Console.WriteLine($"Animation eligibility regressions passed: {checks}. No engine or replay started.");
