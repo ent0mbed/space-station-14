@@ -415,6 +415,8 @@ public sealed partial class CaptureRunner
                 fused = new { ownerVisits = _postOwnerVisits, layerVisits = _postLayerVisits, milliseconds = _fusedInspectionMs },
                 appearance = new { layerComparisons = _appearanceLayerComparisons, projectionMilliseconds = _appearanceProjectionMs },
                 phase = new { layerVisits = _phaseLayerVisits, baselineOwnerVisits = _baselineOwnerVisits,
+                    classificationScans = _phaseClassificationScans, negativeCacheHits = _phaseNegativeCacheHits,
+                    negativeLayerVisitsSkipped = _phaseNegativeLayerVisitsSkipped, unsafeScans = _phaseUnsafeScans,
                     baselineLayerVisits = _baselineLayerVisits, baselineDrainMilliseconds = _baselineDrainMs,
                     ownedArrayCopies = _presentationArraysAllocated },
                 commitMillisecondsExcludingSerialization = _presentationCommitMs,

@@ -27,7 +27,7 @@ public sealed partial class CaptureRunner
     {
         _nativeDeleted.Add(entity.Comp.NetEntity.Id);
         if (_presentationOwners.TryGetValue(entity.Comp.NetEntity.Id, out var owner))
-            owner.Eligibility = default;
+            owner.ResetAnimationCaches();
         // Native deletion emits a detach move before disposing its protected components.
         _nativeMoved.Remove(entity.Owner);
     }
