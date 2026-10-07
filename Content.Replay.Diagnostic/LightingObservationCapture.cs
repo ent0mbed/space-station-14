@@ -182,7 +182,7 @@ public sealed partial class CaptureRunner
         limits = new { owners = LightingObservationPolicy.MaxOwners, retainedBytes = LightingObservationPolicy.MaxRetainedBytes,
             occluderVertices = LightingObservationPolicy.MaxOccluderVertices },
         accounting = "Owned JSON value bytes plus 256 per point/192 per map/256 plus 8 per vertex per occluder, live and pending values, 64 per sampled projection, 16 per removal. Geometry is copied only on change and reused for scalar-only changes. This is not an all-allocation/process cap; temporary frame serialization uses the existing 64 MiB record/1 GiB scene output guards. Canonical Go also applies its combined 512 MiB guard.",
-        unavailable = new[] { "lighting-rendering", "roofs", "tile-emission", "point-shadows", "eye-fov", "sun", "ambient-occlusion" }
+        unavailable = new[] { "lighting-rendering", "roof-rendering", "tile-emission", "point-shadows", "eye-fov", "sun", "ambient-occlusion" }
     };
 
 }

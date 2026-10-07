@@ -24,7 +24,7 @@ the engine's relative resource mount resolves correctly. Help exits without
 opening replay/resources or starting the engine. The worktree remains available
 for reuse and inspection.
 
-Current exports use diagnostic and summary **0.11** and always require
+Current exports use diagnostic and summary **0.13** and always require
 `native-viewer-metadata-chat/1`. Entity/grid upserts include the exact native
 `name`, including empty names. Snapshot chunk 0 carries the full station/player
 baseline; subsequent frames carry upserts/removals. Stations use native network
@@ -48,9 +48,9 @@ native recording settings can omit messages before export. Header limits and
 the summary describe bounded metadata membership, text, events and accounting.
 
 Exact and visual presentation remain separate policies; visual holds countdown-only
-sprite changes. `--lighting-observations true` adds point/map observations with
+sprite changes. `--lighting-observations true` adds point/map, occluder and resolved roof observations with
 exact presentation; visual plus lighting is rejected before replay/resource access.
-Every lighting-enabled snapshot chunk/delta includes a complete point/map observation group,
+Every lighting-enabled snapshot chunk/delta includes complete lighting and roof observation groups,
 including explicit empty arrays. Native component removals have owner-ID deletes;
 ambient component removal replaces the map baseline with explicit absence.
 The helper also applies `robust-289.0.3-light-mask-observation.patch`, whose
@@ -71,14 +71,40 @@ native `Angle.Theta` is double and is explicitly narrowed to finite float32 radi
 for this contract; the observation does not preserve double angular precision.
 Known whole-image masks reference preceding image definitions; body availability
 is separate. Unmapped/generated textures and atlas regions have explicit unavailable
-reasons. The 250000 combined point/map membership limit and 64 MiB live/staged
+reasons. The 250000 combined point/map/occluder membership limit and 64 MiB live/staged
 lighting accounting are fixed. This accounting covers owned lighting values,
 membership projections and removals; it is not an all-allocation/process cap.
 Snapshot chunks use views over the owned replacement lists, and lighting frames
 serialize once through the unchanged 64 MiB record/1 GiB scene output guards.
 Canonical Go additionally applies its combined 512 MiB guard.
-This capability preserves inputs and does not claim lighting
-rendering, roofs, emission, shadows, FOV, sun or AO completeness.
+These capabilities preserve inputs and do not establish native rendering parity.
+
+`native-resolved-roof-observations/1` stores roof-bearing grid membership and
+nonempty 8×8 coverage chunks independently of the optional floor-image export.
+Grid records include `ownerId`, positive uint16 `tileSize` and required `implicit`
+pass classification. Ordered color layers contain native float32 sRGB/alpha and
+signed int32 grid-local tile origins, with one occurrence per grid/tile. Implicit
+roofs take precedence; explicit bits and contributor colors are resolved by the
+pinned native `SharedRoofSystem.GetColor`. `TurfSystem.IsSpace` excludes tiles
+whose definition uses `MapAtmosphere`; floor presence does not imply a roof.
+The snapshot is complete; later transactions replace/delete only affected chunks.
+Grid replacement preserves chunks; grid deletion removes them all. An observed
+roof grid may have empty coverage. Snapshot arrays use 1000-item slices; deltas
+remain one transaction subject to the existing record/output guards.
+
+Roof membership is enumerated once. Native tile, handled-state, lifecycle,
+contributor/ancestor movement, lookup and prototype invalidations select affected
+grids; retained scalar stamps detect local changes. Stable grid movement uses the
+scene pose and retains immutable local geometry. Roof limits are separate:
+4096 grids, 32768 chunks, 500000 unique grid/tile pairs and 64 MiB live/pending/
+resolution/invalidation accounting. Within a grid, chunks cover disjoint cells.
+Native implicit-before-explicit passes are identified, but viewport-dependent
+grid order within a pass remains an unproven overlap/color/alpha parity constraint.
+Focused BCL checks:
+
+```sh
+dotnet run -c Release --project Tools/replay-diagnostic/roof-observation-tests/RoofObservationTests.csproj
+```
 
 The `resources` command also retrieves the original pinned shader bodies needed by
 the first TypeScript viewer's point/mask and wall passes: `light-soft.swsl`, its
