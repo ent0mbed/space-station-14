@@ -22,6 +22,7 @@ public sealed class DiagnosticRoofSystem : EntitySystem
     internal readonly HashSet<EntityUid> Changed = [];
     internal readonly HashSet<EntityUid> GridChanged = [];
     internal bool TileDefinitionsChanged;
+    internal Action<long>? Reserve;
 
     public override void Initialize()
     {
@@ -58,7 +59,7 @@ public sealed class DiagnosticRoofSystem : EntitySystem
                 if (!_stateComponents.Contains(change.NetID)
                     || !EntityManager.TryGetEntity(entity.NetEntity, out var uid) || uid is not { } owner) continue;
                 Mark(owner);
-                if (_gridComponents.Contains(change.NetID)) GridChanged.Add(owner);
+                if (_gridComponents.Contains(change.NetID)) MarkGrid(owner);
             }
     }
     private void OnBodyType(ref PhysicsBodyTypeChangedEvent args) => Mark(args.Entity);
@@ -73,7 +74,7 @@ public sealed class DiagnosticRoofSystem : EntitySystem
         if (args.Component is MapGridComponent or RoofComponent or ImplicitRoofComponent or IsRoofComponent
             or FixturesComponent or PhysicsComponent or ContainerManagerComponent)
             Mark(args.Owner);
-        if (args.Component is MapGridComponent or RoofComponent or ImplicitRoofComponent) GridChanged.Add(args.Owner);
+        if (args.Component is MapGridComponent or RoofComponent or ImplicitRoofComponent) MarkGrid(args.Owner);
     }
     private void OnPrototypes(PrototypesReloadedEventArgs args)
     {
@@ -81,9 +82,20 @@ public sealed class DiagnosticRoofSystem : EntitySystem
     }
     private void Mark(EntityUid uid)
     {
-        if (!Changed.Contains(uid) && Changed.Count >= Program.MaxPresentationOwners)
+        if (Changed.Contains(uid)) return;
+        if (Changed.Count >= Program.MaxPresentationOwners)
             throw new InvalidDataException("Native roof invalidation identity budget exceeded.");
+        Reserve?.Invoke(64);
         Changed.Add(uid);
+    }
+    private void MarkGrid(EntityUid uid)
+    {
+        Mark(uid);
+        if (GridChanged.Contains(uid)) return;
+        if (GridChanged.Count >= RoofObservationPolicy.MaxGrids)
+            throw new InvalidDataException("Native roof grid-state invalidation budget exceeded.");
+        Reserve?.Invoke(64);
+        GridChanged.Add(uid);
     }
     internal void Clear() { Changed.Clear(); GridChanged.Clear(); TileDefinitionsChanged = false; }
 

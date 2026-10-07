@@ -66,6 +66,31 @@ Reject(() => new RoofObservationInventory().ReplaceGrid(1, 1, [new(new(0, 0), fi
 Reject(() => new RoofObservationInventory().ReplaceGrid(1, 0, []), "Invalid tile size admitted.");
 Reject(() => new RoofObservationInventory(128).ReplaceGrid(1, 1, native), "Live/staged bound ignored.");
 Reject(() => new RoofObservationInventory(128).SetOutsideBytes(129), "Invalidation residency ignored.");
+var emptyBoundary = new RoofObservationInventory(64);
+Reject(() => emptyBoundary.ReplaceGrid(1, 1, []), "Empty grid retained plus pending admission ignored.");
+Check(emptyBoundary.GridCount == 0 && emptyBoundary.RetainedBytes == 0, "Rejected empty grid never enters ownership.");
+var exactEmptyBoundary = new RoofObservationInventory(128);
+exactEmptyBoundary.ReplaceGrid(1, 1, []);
+Check(exactEmptyBoundary.GridCount == 1 && exactEmptyBoundary.RetainedBytes == 64
+    && exactEmptyBoundary.PeakLiveStagedBytes == 128, "Exact empty grid boundary includes live plus pending in peak.");
+var nearProductionBoundary = new RoofObservationInventory();
+nearProductionBoundary.SetOutsideBytes(RoofObservationPolicy.MaxBytes - 127);
+Reject(() => nearProductionBoundary.ReplaceGrid(1, 1, []), "Near-limit empty grid bypassed full admission reserve.");
+Check(nearProductionBoundary.GridCount == 0 && nearProductionBoundary.RetainedBytes == 0, "Near-limit rejection preserves ownership.");
+var ancestryBoundary = new RoofObservationInventory();
+var fittingLinks = (int) (RoofObservationPolicy.MaxBytes / 192);
+ancestryBoundary.SetOutsideBytes(RoofObservationPolicy.InvalidationBytes(fittingLinks, 0, 0, 0));
+Reject(() => ancestryBoundary.SetOutsideBytes(RoofObservationPolicy.InvalidationBytes(fittingLinks, 0, 0, 0, admission: 192)),
+    "Ancestry growth was admitted beyond its byte limit before the link-count limit.");
+var queueBoundary = new RoofObservationInventory(128);
+queueBoundary.SetOutsideBytes(RoofObservationPolicy.InvalidationBytes(0, 0, 0, 2));
+Check(queueBoundary.PeakLiveStagedBytes == 128, "Queued identities are charged before clearing.");
+Reject(() => queueBoundary.SetOutsideBytes(RoofObservationPolicy.InvalidationBytes(0, 0, 0, 2, admission: 64)),
+    "Queued identity growth bypassed admission.");
+var refreshBoundary = new RoofObservationInventory(1024);
+refreshBoundary.SetOutsideBytes(RoofObservationPolicy.InvalidationBytes(2, 1, 0, 0));
+Reject(() => refreshBoundary.SetOutsideBytes(RoofObservationPolicy.InvalidationBytes(2, 1, 0, 0, scratch: 256, admission: 256)),
+    "Old ancestry and new builder residency bypassed admission.");
 inventory.Begin(); inventory.ReplaceGrid(9, 1, [new(new(1, 1), second)]); inventory.Reset();
 Check(inventory.GridCount == 0 && inventory.ChunkCount == 0 && inventory.TileCount == 0 && inventory.RetainedBytes == 0, "Close clears owned inventory.");
 Console.WriteLine($"{checks} focused roof ownership/order/wire/bound checks passed.");

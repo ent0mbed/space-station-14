@@ -98,8 +98,15 @@ grids; retained scalar stamps detect local changes. Stable grid movement uses th
 scene pose and retains immutable local geometry. Roof limits are separate:
 4096 grids, 32768 chunks, 500000 unique grid/tile pairs and 64 MiB live/pending/
 resolution/invalidation accounting. Within a grid, chunks cover disjoint cells.
+Identity queues, contributor records, ancestry links and refresh scratch reserve
+their byte accounting before growth, including the baseline queue's transient peak.
 Native implicit-before-explicit passes are identified, but viewport-dependent
 grid order within a pass remains an unproven overlap/color/alpha parity constraint.
+Differently colored overlapping `IsRoof` contributors have a separate unproven
+selection constraint: unrelated native lookup-tree changes may alter the first
+native contributor without a covered invalidation. Resolved samples use the native
+winner when a grid is inspected; this exporter does not claim exact selection parity
+for that ambiguous case.
 Focused BCL checks:
 
 ```sh

@@ -10,6 +10,9 @@ internal static class RoofObservationPolicy
     public const int MaxChunks = 32768;
     public const int MaxTiles = 500_000;
     public const long MaxBytes = 64L * 1024 * 1024;
+    internal static long InvalidationBytes(int links, int contributors, int grids, int queued,
+        long scratch = 0, long admission = 0) => checked(links * 192L + contributors * 256L
+            + grids * 384L + queued * 64L + scratch + admission);
 }
 
 internal readonly record struct RoofTile(int X, int Y);
@@ -64,8 +67,8 @@ internal sealed class RoofObservationInventory
     public void SetOutsideBytes(long bytes)
     {
         if (bytes < 0) throw new ArgumentOutOfRangeException(nameof(bytes));
+        CheckBudget(checked(bytes - _outsideBytes));
         _outsideBytes = bytes;
-        CheckBudget();
     }
 
     public void ReplaceGrid(int ownerId, int tileSize, IEnumerable<RoofSample> samples, bool implicitRoof = false)
@@ -103,8 +106,11 @@ internal sealed class RoofObservationInventory
             var grid = new RoofGridObservation(ownerId, tileSize, implicitRoof);
             if (!_grids.TryGetValue(ownerId, out var previousGrid) || grid != previousGrid)
             {
-                Charge(64);
-                if (!_grids.ContainsKey(ownerId)) RetainedBytes += 64;
+                var isNew = !_grids.ContainsKey(ownerId);
+                // Empty grids have no chunk admission below: reserve both the
+                // retained record and pending replacement before admitting it.
+                Charge(64, isNew ? 64 : 0);
+                if (isNew) RetainedBytes += 64;
                 _grids[ownerId] = grid;
                 _changes.GridReplacements.Add(grid);
             }
@@ -134,7 +140,7 @@ internal sealed class RoofObservationInventory
                 if (!found && _chunks.Count >= RoofObservationPolicy.MaxChunks
                     || TileCount - previous.Tiles + values.Count > RoofObservationPolicy.MaxTiles)
                     throw new InvalidDataException("Resolved roof retained inventory budget exceeded.");
-                Charge(bytes);
+                Charge(bytes, Math.Max(0, bytes - previous.Bytes));
                 _chunks[key] = (value, bytes, values.Count);
                 if (!_byGrid.TryGetValue(ownerId, out var keys)) _byGrid[ownerId] = keys = [];
                 keys.Add(key);
@@ -200,10 +206,14 @@ internal sealed class RoofObservationInventory
     internal static RoofChunkKey Key(int ownerId, RoofTile tile) => new(ownerId, tile.X >> 3, tile.Y >> 3);
     private static int CompareKeys(RoofChunkKey a, RoofChunkKey b) => a.OwnerId != b.OwnerId ? a.OwnerId.CompareTo(b.OwnerId)
         : a.X != b.X ? a.X.CompareTo(b.X) : a.Y.CompareTo(b.Y);
-    private void Charge(long bytes) { _pendingBytes += bytes; CheckBudget(); }
-    private void CheckBudget()
+    private void Charge(long bytes, long retainedAddition = 0)
     {
-        var bytes = checked(RetainedBytes + _pendingBytes + _resolutionBytes + _outsideBytes);
+        CheckBudget(checked(bytes + retainedAddition));
+        _pendingBytes += bytes;
+    }
+    private void CheckBudget(long additional = 0)
+    {
+        var bytes = checked(RetainedBytes + _pendingBytes + _resolutionBytes + _outsideBytes + additional);
         if (bytes > _maxBytes) throw new InvalidDataException("Resolved roof live/staged byte budget exceeded.");
         PeakLiveStagedBytes = Math.Max(PeakLiveStagedBytes, bytes);
     }

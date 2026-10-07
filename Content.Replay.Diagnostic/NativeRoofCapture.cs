@@ -32,6 +32,7 @@ internal sealed class NativeRoofCapture : IDisposable
     private readonly HashSet<EntityUid> _changedContributors = [];
     private readonly HashSet<EntityUid> _dirtyGrids = [];
     private int _links;
+    private long _invalidationScratchBytes;
     private bool _initial = true;
     private bool _disposed;
     private long _nativeTilesInspected;
@@ -60,6 +61,7 @@ internal sealed class NativeRoofCapture : IDisposable
         _observer = entities.System<DiagnosticRoofSystem>();
         _tiles = entities.System<DiagnosticTileSystem>();
         _observer.Clear();
+        _observer.Reserve = ChargeInvalidation;
         _tiles.TileChanged += OnTileChanged;
         _transforms.OnGlobalMoveEvent += OnMove;
     }
@@ -74,13 +76,24 @@ internal sealed class NativeRoofCapture : IDisposable
     }
     private void QueueDependents(EntityUid uid)
     {
-        if (_contributors.ContainsKey(uid)) _changedContributors.Add(uid);
-        if (_dependencies.TryGetValue(uid, out var members)) _changedContributors.UnionWith(members);
+        if (_contributors.ContainsKey(uid)) QueueContributor(uid);
+        if (_dependencies.TryGetValue(uid, out var members))
+            foreach (var member in members) QueueContributor(member);
+    }
+    private void QueueContributor(EntityUid uid)
+    {
+        if (_changedContributors.Contains(uid)) return;
+        if (_changedContributors.Count >= Program.MaxPresentationOwners)
+            throw new InvalidDataException("Native changed roof-contributor budget exceeded.");
+        ChargeInvalidation(64);
+        _changedContributors.Add(uid);
     }
     private void Dirty(EntityUid grid)
     {
-        if (!_dirtyGrids.Contains(grid) && _dirtyGrids.Count >= RoofObservationPolicy.MaxGrids)
+        if (_dirtyGrids.Contains(grid)) return;
+        if (_dirtyGrids.Count >= RoofObservationPolicy.MaxGrids)
             throw new InvalidDataException("Native affected roof-grid budget exceeded.");
+        ChargeInvalidation(64);
         _dirtyGrids.Add(grid);
     }
     private bool Live(EntityUid uid) => _entities.TryGetComponent<MetaDataComponent>(uid, out var metadata)
@@ -95,7 +108,7 @@ internal sealed class NativeRoofCapture : IDisposable
             var grids = _entities.AllEntityQueryEnumerator<MapGridComponent>();
             while (grids.MoveNext(out var uid, out _)) if (Live(uid)) AddGrid(uid);
             var contributors = _entities.AllEntityQueryEnumerator<IsRoofComponent>();
-            while (contributors.MoveNext(out var uid, out _)) if (Live(uid)) _changedContributors.Add(uid);
+            while (contributors.MoveNext(out var uid, out _)) if (Live(uid)) QueueContributor(uid);
         }
         _observer.ObserveReplayState(state);
         foreach (var uid in _observer.Changed)
@@ -103,7 +116,7 @@ internal sealed class NativeRoofCapture : IDisposable
             if (Live(uid) && _entities.HasComponent<MapGridComponent>(uid)) AddGrid(uid);
             if (_observer.GridChanged.Contains(uid) || _grids.Contains(uid) && !Live(uid)) Dirty(uid);
             QueueDependents(uid);
-            if (Live(uid) && _entities.HasComponent<IsRoofComponent>(uid)) _changedContributors.Add(uid);
+            if (Live(uid) && _entities.HasComponent<IsRoofComponent>(uid)) QueueContributor(uid);
         }
         if (_observer.TileDefinitionsChanged) foreach (var uid in _grids) Dirty(uid);
 
@@ -111,7 +124,7 @@ internal sealed class NativeRoofCapture : IDisposable
         // or all tiles. Sample final scalar values after native FrameUpdate,
         // including paused members; replay component candidates are queued above.
         foreach (var (uid, contributor) in _contributors)
-            if (!TryContributor(uid, out var stamp) || stamp != contributor.Stamp) _changedContributors.Add(uid);
+            if (!TryContributor(uid, out var stamp) || stamp != contributor.Stamp) QueueContributor(uid);
         foreach (var uid in _changedContributors) RefreshContributor(uid);
         _changedContributors.Clear();
         foreach (var uid in _grids)
@@ -164,14 +177,16 @@ internal sealed class NativeRoofCapture : IDisposable
         return changes;
     }
 
-    private void ChargeInvalidation() => _inventory.SetOutsideBytes(
-        _links * 192L + _contributors.Count * 256L + _grids.Count * 384L
-        + (_observer.Changed.Count + _observer.GridChanged.Count + _dirtyGrids.Count + _changedContributors.Count) * 64L);
+    private void ChargeInvalidation(long admission = 0) => _inventory.SetOutsideBytes(
+        RoofObservationPolicy.InvalidationBytes(_links, _contributors.Count, _grids.Count,
+            _observer.Changed.Count + _observer.GridChanged.Count + _dirtyGrids.Count + _changedContributors.Count,
+            _invalidationScratchBytes, admission));
 
     private void AddGrid(EntityUid uid)
     {
         if (_grids.Contains(uid)) return;
         if (_grids.Count >= RoofObservationPolicy.MaxGrids) throw new InvalidDataException("Native roof-grid membership budget exceeded.");
+        ChargeInvalidation(384);
         _grids.Add(uid); Dirty(uid);
     }
     private void RemoveGrid(EntityUid uid)
@@ -195,32 +210,50 @@ internal sealed class NativeRoofCapture : IDisposable
     }
     private void RefreshContributor(EntityUid uid)
     {
-        if (_contributors.Remove(uid, out var previous))
+        var scratchBefore = _invalidationScratchBytes;
+        try
         {
-            if (previous.Stamp.Grid is { } oldGrid) Dirty(oldGrid);
-            foreach (var ancestor in previous.Ancestors)
+            if (_contributors.Remove(uid, out var previous))
             {
-                var members = _dependencies[ancestor]; members.Remove(uid); _links--;
-                if (members.Count == 0) _dependencies.Remove(ancestor);
+                // The removed immutable record/array remains live while the new
+                // ancestry is assembled. Keep that storage charged as scratch.
+                _invalidationScratchBytes += 256 + previous.Ancestors.Length * 64L;
+                ChargeInvalidation();
+                if (previous.Stamp.Grid is { } oldGrid) Dirty(oldGrid);
+                foreach (var ancestor in previous.Ancestors)
+                {
+                    var members = _dependencies[ancestor]; members.Remove(uid); _links--;
+                    if (members.Count == 0) _dependencies.Remove(ancestor);
+                }
             }
+            if (!TryContributor(uid, out var stamp)) return;
+            if (_contributors.Count >= Program.MaxPresentationOwners)
+                throw new InvalidDataException("Native roof-contributor membership budget exceeded.");
+            ChargeInvalidation(256);
+            _invalidationScratchBytes += 256;
+            var ancestors = new List<EntityUid>();
+            var current = uid;
+            while (current != EntityUid.Invalid && !_entities.HasComponent<MapGridComponent>(current))
+            {
+                if (ancestors.Count >= MaxDepth || ancestors.Contains(current)
+                    || !_entities.TryGetComponent<TransformComponent>(current, out var transform))
+                    throw new InvalidDataException("Incomplete/cyclic native roof-contributor ancestry.");
+                var found = _dependencies.TryGetValue(current, out var members);
+                var newLink = !found || !members!.Contains(uid);
+                if (newLink && _links >= MaxLinks) throw new InvalidDataException("Native roof invalidation ancestry budget exceeded.");
+                // Reserve before growing either retained indexes or the ancestry
+                // builder. Includes builder/array coexistence and set capacity.
+                ChargeInvalidation(64 + (newLink ? 192 : 0));
+                if (!found) _dependencies[current] = members = [];
+                if (members!.Add(uid)) _links++;
+                _invalidationScratchBytes += 64;
+                ancestors.Add(current); current = transform.ParentUid;
+            }
+            ChargeInvalidation(256);
+            _contributors[uid] = new(stamp, ancestors.ToArray());
+            if (stamp.Grid is { } grid) Dirty(grid);
         }
-        if (!TryContributor(uid, out var stamp)) return;
-        if (_contributors.Count >= Program.MaxPresentationOwners)
-            throw new InvalidDataException("Native roof-contributor membership budget exceeded.");
-        var ancestors = new List<EntityUid>();
-        var current = uid;
-        while (current != EntityUid.Invalid && !_entities.HasComponent<MapGridComponent>(current))
-        {
-            if (ancestors.Count >= MaxDepth || ancestors.Contains(current)
-                || !_entities.TryGetComponent<TransformComponent>(current, out var transform))
-                throw new InvalidDataException("Incomplete/cyclic native roof-contributor ancestry.");
-            if (_links >= MaxLinks) throw new InvalidDataException("Native roof invalidation ancestry budget exceeded.");
-            if (!_dependencies.TryGetValue(current, out var members)) _dependencies[current] = members = [];
-            if (members.Add(uid)) _links++;
-            ancestors.Add(current); current = transform.ParentUid;
-        }
-        _contributors[uid] = new(stamp, ancestors.ToArray());
-        if (stamp.Grid is { } grid) Dirty(grid);
+        finally { _invalidationScratchBytes = scratchBefore; ChargeInvalidation(); }
     }
 
     private IEnumerable<RoofSample> ResolveTiles(EntityUid uid, MapGridComponent grid,
@@ -255,6 +288,8 @@ internal sealed class NativeRoofCapture : IDisposable
         limits = new { grids = RoofObservationPolicy.MaxGrids, chunks = RoofObservationPolicy.MaxChunks,
             tiles = RoofObservationPolicy.MaxTiles, retainedBytes = RoofObservationPolicy.MaxBytes, chunkSize = RoofObservationPolicy.ChunkSize },
         semantics = "Pinned RoofOverlay: implicit precedence, native Turf.IsSpace/MapAtmosphere exclusion, native SharedRoof.GetColor explicit/contributor resolution; sRGB grid-local tile coverage.",
+        unprovenParity = new[] { "Viewport-dependent native cross-grid order within each roof pass.",
+            "Overlapping differently colored IsRoof contributors: unrelated native lookup-tree changes may alter first-contributor selection without a covered invalidation." },
         accounting = "Owned JSON values plus grid/chunk/tile indexes, live pending changes and affected-grid resolution scratch; retained contributor/ancestry indexes also charged. Not a process-wide allocation cap." };
     private static LightingColor Color(Robust.Shared.Maths.Color color) => new(color.R, color.G, color.B, color.A);
 
@@ -264,6 +299,7 @@ internal sealed class NativeRoofCapture : IDisposable
         _disposed = true;
         _tiles.TileChanged -= OnTileChanged;
         _transforms.OnGlobalMoveEvent -= OnMove;
+        _observer.Reserve = null;
         _observer.Clear();
         _grids.Clear(); _gridIds.Clear(); _gridStamps.Clear(); _contributors.Clear(); _dependencies.Clear();
         _changedContributors.Clear(); _dirtyGrids.Clear();
