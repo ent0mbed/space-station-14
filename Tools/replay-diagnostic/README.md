@@ -2,7 +2,7 @@
 
 This adapter reads engine **289.0.3**, game build
 `94087a918a2fae4571f5a529fe14ef7f5dce29a3`. It exports bounded diagnostic JSONL;
-the Go `replay-pack` command turns a completed capture into a browser package.
+the Go `ss14-replay pack` command turns a completed capture into a browser package.
 
 Install Git, Bash and the **.NET SDK 10.0.100** (the SDK requested by both the
 source checkout and pinned game checkout). Public GitHub repositories and NuGet
